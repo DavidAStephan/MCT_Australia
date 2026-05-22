@@ -1,0 +1,36 @@
+Package: mctaus
+Title: Australian Multivariate Core Trend Inflation
+Version: 0.0.0.9000
+Authors@R:
+    person("David", "Stephan", role = c("aut", "cre"))
+Description: Bayesian mixed-frequency dynamic factor model for Australian
+    CPI, producing a measure of trend inflation and a decomposition of
+    where persistence is coming from (common vs sector-specific). An
+    Australian analogue of the NY Fed's Multivariate Core Trend (MCT)
+    inflation model. Estimation in Stan via cmdstanr; orchestration via
+    targets; dashboard via Quarto.
+License: file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.3)
+Imports:
+    arrow,
+    bayesplot,
+    cmdstanr,
+    dplyr,
+    ggplot2,
+    loo,
+    lubridate,
+    posterior,
+    quarto,
+    readabs,
+    rlang,
+    tarchetypes,
+    targets,
+    tidyr
+Suggests:
+    knitr,
+    testthat (>= 3.0.0)
+Additional_repositories:
+    https://stan-dev.r-universe.dev
+Config/testthat/edition: 3

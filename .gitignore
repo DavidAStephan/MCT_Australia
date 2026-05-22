@@ -1,0 +1,46 @@
+# R session / project files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# renv — keep lockfile and settings, ignore the library
+renv/library/
+renv/local/
+renv/cellar/
+renv/python/
+renv/staging/
+
+# Stan build artefacts
+.cmdstan/
+*.exe
+stan/*.hpp
+stan/*.o
+# compiled model binaries sit next to the .stan files, no extension on macOS/Linux
+stan/mct_aus_A
+stan/mct_aus_B
+
+# Cached data and posterior draws (huge; regenerable)
+data/raw/*
+!data/raw/.gitkeep
+outputs/draws/*
+!outputs/draws/.gitkeep
+outputs/figures/*
+!outputs/figures/.gitkeep
+outputs/tables/*
+!outputs/tables/.gitkeep
+outputs/*.log
+
+# Quarto build output
+dashboard/_site/
+dashboard/.quarto/
+dashboard/*_files/
+
+# targets store
+_targets/
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
