@@ -1,0 +1,61 @@
+/*-- scss:defaults --*/
+$body-color: #1d1d1f;
+$body-bg: #fdfdfd;
+$link-color: #1f5582;
+$font-family-sans-serif: "Inter", -apple-system, BlinkMacSystemFont,
+  "Helvetica Neue", Arial, sans-serif;
+
+$h1-font-size: 1.75rem;
+$h2-font-size: 1.25rem;
+$h3-font-size: 1.05rem;
+
+/*-- scss:rules --*/
+body {
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.quarto-title-block {
+  margin-bottom: 2.5rem;
+}
+.quarto-title {
+  letter-spacing: -0.015em;
+}
+.subtitle {
+  color: #555;
+  font-weight: 400;
+}
+
+h2 {
+  margin-top: 2.5rem;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 0.3rem;
+  letter-spacing: -0.01em;
+}
+h3 { margin-top: 1.8rem; }
+
+.figure { margin: 1rem 0 2.25rem 0; }
+figcaption, .figure-caption {
+  color: #666;
+  font-size: 0.88rem;
+}
+
+table {
+  font-size: 0.92rem;
+}
+th { background: #f3f3f3; }
+td, th { padding: 0.35rem 0.6rem; }
+
+.callout-note, .callout-tip {
+  border-left-width: 3px;
+}
+
+#TOC {
+  font-size: 0.88rem;
+}
+
+footer, .footnotes {
+  color: #666;
+  font-size: 0.85rem;
+  margin-top: 3rem;
+}
