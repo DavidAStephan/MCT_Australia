@@ -1,0 +1,175 @@
+name: Monthly MCT update
+
+on:
+  # Wednesdays at 02:30 UTC ≈ 12:30 AEST (13:30 AEDT during summer).
+  # ABS publishes the Monthly CPI at 11:30 Canberra time on the last Wednesday
+  # of each month. The "last Wednesday" gate below skips other Wednesdays.
+  schedule:
+    - cron: "30 2 * * 3"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force-run even if today isn't the last Wednesday"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  fit-and-publish:
+    runs-on: ubuntu-latest
+    # GitHub-hosted ubuntu-latest is 4 vCPU / 16 GB. The Stan fits at 4 chains
+    # × 1500/1500 iters land within this; budget ~3 hours total. If runs hit
+    # the 360-min job cap, consider:
+    #   1) parallel_chains=2 with chains=2 (same fit, half the parallelism)
+    #   2) GitHub Larger Runners (paid) or a self-hosted runner with more cores
+    timeout-minutes: 350
+
+    permissions:
+      contents: write    # for the gh-pages deploy
+
+    steps:
+      # ------------------------------------------------------------------ Gate
+      - name: Determine whether to run
+        id: gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+             [[ "${{ inputs.force }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — running."
+            exit 0
+          fi
+          # On a cron Wednesday: only proceed if next week's same weekday is in
+          # a different month (i.e., today is the LAST Wednesday of the month).
+          today_month=$(date -u +%m)
+          next_month=$(date -u -d "+7 days" +%m)
+          if [[ "$today_month" != "$next_month" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Last Wednesday of $today_month — running."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not the last Wednesday of the month — skipping."
+          fi
+
+      # --------------------------------------------------------------- Sources
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Set up R
+        if: steps.gate.outputs.run == 'true'
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.5"
+          use-public-rspm: true
+
+      - name: Set up Pandoc (Quarto rendering dep)
+        if: steps.gate.outputs.run == 'true'
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Set up Quarto
+        if: steps.gate.outputs.run == 'true'
+        uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: "1.4.557"
+
+      # ---------------------------------------------------------------- Caches
+      - name: Cache renv
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/R/renv
+          key: ${{ runner.os }}-renv-${{ hashFiles('renv.lock') }}
+          restore-keys: ${{ runner.os }}-renv-
+
+      - name: Cache CmdStan
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cmdstan
+          key: ${{ runner.os }}-cmdstan-2.36.0
+          restore-keys: ${{ runner.os }}-cmdstan-
+
+      - name: Cache targets store
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            _targets
+            outputs/draws
+          key: ${{ runner.os }}-targets-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-targets-
+
+      # -------------------------------------------------------- R dependencies
+      - name: Restore R packages
+        if: steps.gate.outputs.run == 'true'
+        uses: r-lib/actions/setup-renv@v2
+
+      - name: Install CmdStan
+        if: steps.gate.outputs.run == 'true'
+        shell: Rscript {0}
+        run: |
+          if (!cmdstanr::cmdstan_version(error_on_NA = FALSE) %in% NA) {
+            cat("Using cached CmdStan", as.character(cmdstanr::cmdstan_version()), "\n")
+          } else {
+            cmdstanr::install_cmdstan(cores = 2)
+          }
+
+      # ----------------------------------------------------------- Rotate fits
+      # Promote last run's `fit_B.rds` to `_prior.rds` so the dashboard's
+      # revisions panel has a comparison.
+      - name: Rotate prior vintage
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          mkdir -p outputs/draws
+          if [[ -f outputs/draws/fit_B.rds ]]; then
+            cp outputs/draws/fit_B.rds  outputs/draws/fit_B_prior.rds
+            cp outputs/draws/stan_data.rds outputs/draws/stan_data_prior.rds
+            echo "Rotated fit_B.rds -> fit_B_prior.rds"
+          else
+            echo "No previous fit_B.rds — revisions panel will be empty this run."
+          fi
+
+      # ----------------------------------------------------------------- Build
+      - name: Run targets pipeline
+        if: steps.gate.outputs.run == 'true'
+        shell: Rscript {0}
+        run: |
+          options(repos = c(CRAN = "https://cloud.r-project.org"))
+          targets::tar_make()
+          # Print diagnostics
+          fit_A <- targets::tar_read(fit_A)
+          fit_B <- targets::tar_read(fit_B)
+          for (label in c("A", "B")) {
+            fit <- get(paste0("fit_", label))
+            diag <- fit$diagnostic_summary()
+            cat(sprintf("[%s] divergent=%d  max_treedepth=%d\n",
+                        label, sum(diag$num_divergent),
+                        sum(diag$num_max_treedepth)))
+          }
+
+      # ----------------------------------------------------------------- Deploy
+      - name: Publish dashboard
+        if: steps.gate.outputs.run == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dashboard/_site
+          force_orphan: true
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_message: "Dashboard update for ${{ github.run_id }}"
+
+      # ------------------------------------------------------ Persist fits
+      - name: Upload fits as workflow artefact
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-fits-${{ github.run_id }}
+          path: |
+            outputs/draws/fit_A.rds
+            outputs/draws/fit_B.rds
+            outputs/draws/fit_A_slim.parquet
+            outputs/draws/fit_B_slim.parquet
+            outputs/draws/stan_data.rds
+          retention-days: 90
