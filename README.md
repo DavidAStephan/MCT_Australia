@@ -2,14 +2,51 @@
 
 A Bayesian mixed-frequency dynamic factor model for Australian CPI, in the
 spirit of the NY Fed's [Multivariate Core Trend (MCT)](https://www.newyorkfed.org/research/policy/mct)
-inflation model (Stock & Watson 2016). Two variants of the common factor are
-estimated and compared.
+inflation model (Stock & Watson 2016). Three variants of the common factor
+are estimated and compared:
+
+- **Variant A** — AR(1) transitory common factor; trend = weighted sum of
+  sector-specific RW drifts.
+- **Variant B** — random-walk common trend (canonical Stock-Watson);
+  trend includes the common drift plus sector-specific drifts.
+- **Variant C** — combined: BOTH a random-walk common trend AND an i.i.d.
+  common cycle, each with stochastic volatility, with time-invariant
+  loadings. Nests A (set trend factor to zero) and B (set cycle factor to
+  zero) as restrictions, letting the data partition the common component.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full project brief and model specification.
 
 ## Status
 
-🚧 In progress — Step 1 (project skeleton).
+Three Stan variants fit on the full T=435 sample (1990-Jan → 2026-Mar);
+mixed-frequency observations (monthly from Apr-2024).
+
+### Headline finding (2026-05-23)
+
+**Variant A is preferred by LOO** in a 3-way comparison:
+
+```
+  elpd_diff  se_diff
+A    0.0      0.0    ← winner
+B  -13.0      4.4    (A > B by ~3σ)
+C  -71.6     11.2    (A > C by ~6σ)
+```
+
+Substantively: Australian sectoral CPI co-movement is **predominantly
+transitory**, not a drifting common trend. Variant C identifies BOTH a
+common cycle and a common drift (the cycle loadings are all clearly
+non-zero across sectors, and the cycle's log-vol RW step `sigma_hec=0.17`
+is ~3× larger than the trend's `sigma_hc=0.065`), but the combined-factor
+structure over-parameterises and loses predictive accuracy versus the
+AR(1)-cycle-only A specification.
+
+This is the **opposite** of the NY Fed's finding for US PCE, where the
+Stock-Watson random-walk common trend is the canonical decomposition. For
+the Australian group-level CPI panel, the data prefers an AR(1) cycle
+interpretation of the common factor.
+
+The dashboard headlines Variant A; Variant B and C are shown in the
+variant-comparison panel.
 
 ## Requirements
 
@@ -48,7 +85,8 @@ The rendered Quarto dashboard lands in `dashboard/_site/`.
 See [`CLAUDE.md`](CLAUDE.md) for the canonical layout. In brief:
 
 - `R/` — data fetch, prep, fitting, post-processing, viz helpers
-- `stan/` — the two Stan models (`mct_aus_A.stan`, `mct_aus_B.stan`)
+- `stan/` — the three Stan models (`mct_aus_A.stan`, `mct_aus_B.stan`,
+  `mct_aus_C.stan`)
 - `dashboard/` — Quarto dashboard sources
 - `data/` — raw ABS pulls (gitignored) and processed series
 - `outputs/` — posterior draws (gitignored), figures, tables
@@ -92,3 +130,32 @@ See [`CLAUDE.md`](CLAUDE.md) for the canonical layout. In brief:
 - **Sampler config**: `chains = 4`, `iter_warmup = 1500`,
   `iter_sampling = 1500`, `adapt_delta = 0.97`, `max_treedepth = 12`.
   (`adapt_delta` raised from the brief's 0.95.)
+- **Variant C scope**: implements the NY Fed MCT's structural choice of
+  having BOTH a common-trend and a common-cycle factor (item 1 of the
+  NY Fed comparison) plus a tighter log-vol drift prior matching their
+  scale (item 5). Two NY Fed features are **deferred**:
+  - **MA(3) sector idiosyncratic errors** (item 2). Stan with MA(q) on
+    sector noise via the forward-recursion idiom blew up identification
+    on T=120 simulated data — NUTS could not reliably keep the MA roots
+    inside the unit circle even with tightly shrunk priors. NY Fed's
+    Gibbs sampler enforces invertibility post-draw via root reflection,
+    which has no straightforward HMC analogue. Would require either a
+    partial-autocorrelation reparameterisation (q=3 case is tractable
+    but non-trivial) or moving off Stan to a custom sampler.
+  - **Outlier scale mixture / Student-t robust likelihood** (item 3).
+    Combined with the two-common-factor structure, the extra distributional
+    flexibility led to chronic warmup multi-modality (50% of chains stuck
+    at ebfmi < 0.1). NY Fed sidesteps this via slice-sampled Bernoulli
+    outlier indicators in their Gibbs sampler; the HMC analogue is
+    marginalisation, but the resulting posterior geometry was infeasible
+    on the test cases used.
+  Both deferred items are worth pursuing in a v2 — either via PAC
+  reparameterisation + careful sampler tuning, or by porting the NY Fed's
+  Gibbs sampler to R (see `MCT-NYFED/functions/`).
+- **Variant C multi-modality**: even with all simplifications, ~1-in-4
+  chains gets stuck during warmup in an alternate factor-allocation mode
+  on small samples. The healthy chains converge to the right answer
+  (95%+ posterior coverage in simulation); the stuck chain inflates R-hat.
+  `fit_mct()` emits a warning identifying chains with `ebfmi < 0.3`;
+  discard those before summarising. On the full T=435 real sample, more
+  data should make this rarer — verify post-fit.

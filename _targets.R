@@ -43,26 +43,38 @@ list(
   tar_target(fit_B,
              fit_mct(stan_data, variant = "B", save_dir = NULL),
              format = "rds"),
+  tar_target(fit_C,
+             fit_mct(stan_data, variant = "C", save_dir = NULL),
+             format = "rds"),
 
   # -------------------- Post-processing --------------------
   tar_target(trend_A, trend_path(fit_A, stan_data$dates)),
   tar_target(trend_B, trend_path(fit_B, stan_data$dates)),
+  tar_target(trend_C, trend_path(fit_C, stan_data$dates)),
   tar_target(common_share_A, common_share_path(fit_A, stan_data$dates)),
   tar_target(common_share_B, common_share_path(fit_B, stan_data$dates)),
+  tar_target(common_share_C, common_share_path(fit_C, stan_data$dates)),
   tar_target(sector_contribs_A,
              sector_contributions(fit_A, weights$weight,
                                   stan_data$dates, stan_data$groups)),
   tar_target(sector_contribs_B,
              sector_contributions(fit_B, weights$weight,
                                   stan_data$dates, stan_data$groups)),
+  tar_target(sector_contribs_C,
+             sector_contributions(fit_C, weights$weight,
+                                  stan_data$dates, stan_data$groups)),
 
   # -------------------- LOO variant comparison --------------------
   tar_target(loo_A, loo_for_fit(fit_A)),
   tar_target(loo_B, loo_for_fit(fit_B)),
-  tar_target(variant_comparison, list(
-    loo_compare = compare_fits_loo(loo_A, loo_B),
-    text = variant_comparison_text(loo_A, loo_B)
-  )),
+  tar_target(loo_C, loo_for_fit(fit_C)),
+  tar_target(variant_comparison, {
+    loo_list <- list(A = loo_A, B = loo_B, C = loo_C)
+    list(
+      loo_compare = compare_fits_loo(loo_list),
+      text = variant_comparison_text(loo_list)
+    )
+  }),
 
   # -------------------- Dashboard --------------------
   # Quarto reads the targets it needs via `tar_read()` inside the .qmd file.

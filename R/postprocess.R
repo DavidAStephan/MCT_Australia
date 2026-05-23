@@ -113,6 +113,46 @@ posterior_revisions <- function(current_fit, prior_fit,
     dplyr::mutate(diff = .data$curr_median - .data$prior_median)
 }
 
+#' Sector-by-sector attribution of the trend revision between two vintages.
+#'
+#' Decomposes the difference in median trend at overlapping dates into a sum
+#' of per-sector contributions: which sector's contribution to the headline
+#' trend moved most between this month's vintage and last month's? This is
+#' the MCMC-native analogue of the NY Fed MCT's Kalman-update attribution in
+#' `decompose_update.m` — same editorial question ("what drove this month's
+#' revision?"), different mechanics. Theirs runs a fresh Kalman filter with
+#' and without the latest data point at posterior-median parameters; ours
+#' compares the per-sector posterior-median contributions across two fits.
+#'
+#' Both fits should be the same variant (or at least produce a
+#' `sector_trend[T, N]` generated quantity).
+#'
+#' @param current_fit,prior_fit CmdStanMCMC fits.
+#' @param current_dates,prior_dates Date vectors used by each fit.
+#' @param weights Numeric vector of length N (will be normalised to sum 1).
+#' @param groups Length-N character vector of sector display names.
+#' @return Long tibble with one row per overlapping (date, group):
+#'   `date, group, curr_contrib, prior_contrib, delta_contrib`. Summing
+#'   `delta_contrib` across groups at a given date recovers the change in
+#'   the headline trend median between the two vintages (up to within-fit
+#'   Monte-Carlo error, since each median is from a finite sample of draws).
+decompose_revisions <- function(current_fit, prior_fit,
+                                current_dates, prior_dates,
+                                weights, groups) {
+  curr <- sector_contributions(current_fit, weights, current_dates, groups,
+                               probs = c(0.16, 0.5, 0.84))
+  prev <- sector_contributions(prior_fit, weights, prior_dates, groups,
+                               probs = c(0.16, 0.5, 0.84))
+
+  curr <- dplyr::select(curr, "date", "group",
+                        curr_contrib = "median")
+  prev <- dplyr::select(prev, "date", "group",
+                        prior_contrib = "median")
+
+  dplyr::inner_join(curr, prev, by = c("date", "group")) |>
+    dplyr::mutate(delta_contrib = .data$curr_contrib - .data$prior_contrib)
+}
+
 #' Read a slim parquet of fit output (produced by export_fit_parquet) and
 #' rebuild the path summaries the dashboard needs without re-loading the
 #' full fit. Handy for downstream consumers.

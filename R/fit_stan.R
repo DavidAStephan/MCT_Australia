@@ -8,6 +8,25 @@
 #' the unconstrained scale), so they explore one mode and mix.
 default_init <- function(stan_data, variant) {
   T_ <- stan_data$T; N <- stan_data$N
+  if (variant == "C") {
+    return(list(
+      mu_hc = 0, mu_hec = 0,
+      mu_hs = rep(0, N), mu_he = rep(0, N),
+      sigma_hc = 0.02, sigma_hec = 0.02,
+      sigma_hs = rep(0.02, N), sigma_he = rep(0.02, N),
+      tau_c_init = 0,
+      s_init = rep(0, N),
+      lambda_tau_fixed = rep(1, N - 1),
+      lambda_eps_fixed = rep(1, N - 1),
+      z_hc = rep(0, T_),
+      z_hec = rep(0, T_),
+      z_hs = matrix(0, T_, N),
+      z_he = matrix(0, T_, N),
+      z_s  = matrix(0, T_, N),
+      z_tau_c = rep(0, T_),
+      z_c     = rep(0, T_)
+    ))
+  }
   init <- list(
     mu_hc = 0,
     mu_hs = rep(0, N),
@@ -48,7 +67,7 @@ default_init <- function(stan_data, variant) {
 #'   `{save_dir}/fit_{variant}.rds`. Default `outputs/draws`.
 #' @return A CmdStanMCMC object.
 fit_mct <- function(stan_data,
-                    variant = c("A", "B"),
+                    variant = c("A", "B", "C"),
                     model_dir = "stan",
                     chains = 4,
                     parallel_chains = chains,
@@ -102,6 +121,21 @@ fit_mct <- function(stan_data,
   )
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "mins"))
   message(sprintf("[fit_mct/%s] sampled in %.1f min", variant, elapsed))
+
+  # Multi-modality watchdog. Variant C in particular has occasional warmup
+  # failures where one chain gets stuck in a saddle-point and never explores
+  # the rest of the posterior. ebfmi < 0.3 is the conventional cutoff for
+  # "this chain is not mixing"; bad ebfmi shows up before bad R-hat does.
+  diag <- fit$diagnostic_summary()
+  bad <- which(diag$ebfmi < 0.3)
+  if (length(bad) > 0) {
+    message(sprintf(
+      "[fit_mct/%s] WARNING: %d/%d chains have ebfmi < 0.3 (chain ids: %s; ebfmi values: %s). Inspect $diagnostic_summary() and consider discarding these chains before summarising.",
+      variant, length(bad), length(diag$ebfmi),
+      paste(bad, collapse = ","),
+      paste(sprintf("%.3f", diag$ebfmi[bad]), collapse = ",")
+    ))
+  }
 
   if (!is.null(save_dir)) {
     dir.create(save_dir, showWarnings = FALSE, recursive = TRUE)

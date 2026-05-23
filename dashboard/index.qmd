@@ -20,14 +20,15 @@ for (f in list.files("../R", "\\.R$", full.names = TRUE)) source(f)
 
 tar_load(c(
   stan_data, weights,
-  trend_A, trend_B, common_share_A, common_share_B,
-  sector_contribs_A, sector_contribs_B,
-  fit_A, fit_B, variant_comparison
+  trend_A, trend_B, trend_C,
+  common_share_A, common_share_B, common_share_C,
+  sector_contribs_A, sector_contribs_B, sector_contribs_C,
+  fit_A, fit_B, fit_C, variant_comparison
 ))
 
 latest_month <- max(stan_data$dates)
-latest_trend <- tail(trend_B$median, 1)
-latest_trend_ci <- c(tail(trend_B$lower, 1), tail(trend_B$upper, 1))
+latest_trend <- tail(trend_A$median, 1)
+latest_trend_ci <- c(tail(trend_A$lower, 1), tail(trend_A$upper, 1))
 ```
 
 ::: {.callout-note}
@@ -36,19 +37,24 @@ latest_trend_ci <- c(tail(trend_B$lower, 1), tail(trend_B$upper, 1))
 `r sprintf("[%.2f, %.2f]", latest_trend_ci[1], latest_trend_ci[2])`) on the
 demeaned, annualised scale used by this model. Values are differences from
 each group's 2000–2019 mean inflation rate — add back the long-run mean to
-read as headline % per year.
+read as headline % per year. The headline uses Variant A (AR(1) common
+factor), which PSIS-LOO prefers over the Stock-Watson random-walk Variant B
+on this sample — see the variant-comparison section below.
 :::
 
 ## Trend inflation
 
-The headline output of the model — the common-trend variant (Variant B). The
-band is a 68% posterior credible interval; the line is the posterior median.
+The headline output of the model — the AR(1)-common variant (Variant A),
+preferred by LOO. Trend in Variant A is the weighted sum of sector-specific
+trends $\sum_i w_i s_{i,t}$; the common factor is treated as a transitory
+cycle. The band is a 68% posterior credible interval; the line is the
+posterior median.
 
 ```{r trend-headline}
 plot_trend_band(
-  trend_B,
+  trend_A,
   title = NULL,
-  subtitle = sprintf("Variant B (random-walk common trend) · latest month: %s",
+  subtitle = sprintf("Variant A (AR(1) common factor) · latest month: %s",
                      format(latest_month, "%B %Y")),
   caption = "Source: ABS CPI 6401.0 (Table 2 monthly from Apr-2024, Table 18 quarterly). Annualised, demeaned vs 2000-2019 sectoral means."
 )
@@ -59,11 +65,14 @@ plot_trend_band(
 The share of weighted-aggregate inflation variance attributable to the common
 factor (vs sector-specific idiosyncrasies). A reading above 50% means the
 month's inflation move is broad-based; below 50% means it is sector-driven.
+See the caveat in the methodology section about Variant A's common-share
+metric — the apples-to-apples Stock-Watson reading is Variant B's, plotted
+in the variant comparison below.
 
 ```{r common-share}
 plot_common_share(
-  common_share_B,
-  subtitle = "Variant B — median + 68% credible band"
+  common_share_A,
+  subtitle = "Variant A — median + 68% credible band"
 )
 ```
 
@@ -74,9 +83,9 @@ trend. Stacking sums to (approximately) the headline trend median.
 
 ```{r sector-contribs, fig.height=5}
 plot_sector_contribs(
-  sector_contribs_B,
+  sector_contribs_A,
   since = latest_month %m-% months(23),
-  subtitle = sprintf("Variant B · %s to %s",
+  subtitle = sprintf("Variant A · %s to %s",
                      format(latest_month %m-% months(23), "%b %Y"),
                      format(latest_month, "%b %Y"))
 )
@@ -90,33 +99,62 @@ prior.
 
 ```{r revisions}
 #| fig-height: 3.5
-prior_fit_path <- "../outputs/draws/fit_B_prior.rds"
+prior_fit_path <- "../outputs/draws/fit_A_prior.rds"
 prior_data_path <- "../outputs/draws/stan_data_prior.rds"
 
 if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
-  fit_B_prior <- readRDS(prior_fit_path)
+  fit_A_prior <- readRDS(prior_fit_path)
   stan_data_prior <- readRDS(prior_data_path)
-  rev <- posterior_revisions(fit_B, fit_B_prior,
+  rev <- posterior_revisions(fit_A, fit_A_prior,
                               stan_data$dates, stan_data_prior$dates)
   plot_revisions(rev,
                  subtitle = "Solid: current; dashed: prior month vintage")
 } else {
-  cat("_No prior vintage saved at `outputs/draws/fit_B_prior.rds`. The revisions panel becomes active after the next monthly run — see the README for the rotation step._")
+  cat("_No prior vintage saved at `outputs/draws/fit_A_prior.rds`. The revisions panel becomes active after the next monthly run — see the README for the rotation step._")
+}
+```
+
+### Which sectors drove the latest revision?
+
+If a prior vintage is available, the bar chart below decomposes the change in
+median trend at the most recent date into per-sector contributions. Bars to
+the right of zero are sectors whose contribution to the headline grew between
+vintages (pushing trend up); bars to the left pulled trend down. This is the
+MCMC-native analogue of the NY Fed MCT's Kalman-update attribution.
+
+```{r revision-attribution}
+#| fig-height: 3.5
+if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
+  decomp <- decompose_revisions(
+    fit_A, fit_A_prior,
+    stan_data$dates, stan_data_prior$dates,
+    weights = weights$weight,
+    groups  = stan_data$groups
+  )
+  plot_revision_attribution(decomp, at_date = latest_month,
+                            subtitle = format(latest_month, "%B %Y"))
+} else {
+  cat("_Attribution panel becomes active after the next monthly run._")
 }
 ```
 
 ## Variant comparison
 
-Two specifications of the common factor are estimated. Variant A treats the
-common factor as transitory (AR(1)); Variant B treats it as a random walk —
-the canonical Stock-Watson trend.
+Three specifications of the common factor are estimated. **Variant A** treats
+the common factor as a stationary AR(1) cycle (its trend is the weighted
+sum of sector-specific drifts). **Variant B** treats it as a random walk —
+the canonical Stock-Watson common trend. **Variant C** combines both —
+a random-walk common trend AND an i.i.d. common cycle, each with its own
+stochastic volatility — nesting A and B as restrictions. On this sample
+LOO prefers A by a wide margin over C, indicating Australian sectoral
+co-movement is overwhelmingly transitory rather than trend-driven.
 
 ```{r variant-trend-compare}
-compare_trend_plot(fit_A, fit_B, stan_data$dates)
+compare_trend_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
 ```
 
 ```{r variant-cs-compare}
-compare_common_share_plot(fit_A, fit_B, stan_data$dates)
+compare_common_share_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
 ```
 
 `r variant_comparison$text`
@@ -174,17 +212,31 @@ trend is $\tau_t = \sum_i w_i s_{i,t}$.
 $c_t = c_{t-1} + \exp(h^c_t/2)\,\eta^c_t$;
 trend is $\tau_t = (\sum_i w_i \lambda_{i,t})\, c_t + \sum_i w_i s_{i,t}$.
 
+**Variant C** (combined trend + cycle):
+$\tau^c_t = \tau^c_{t-1} + \exp(h^c_t/2)\,\eta^{c}_t$ (random-walk common
+trend) and $c_t = \exp(h^{ec}_t/2)\,\varepsilon^c_t$ (i.i.d. common cycle),
+with sector-specific loadings $\lambda^\tau_i$ on the trend and
+$\lambda^\varepsilon_i$ on the cycle (both time-invariant; Housing pinned
+at 1 for identification). The measurement equation becomes $\pi_{i,t} =
+\lambda^\tau_i \tau^c_t + \lambda^\varepsilon_i c_t + s_{i,t} +
+\exp(h^\varepsilon_{i,t}/2)\,\varepsilon_{i,t}$; trend is $\tau_t =
+\sum_i w_i (\lambda^\tau_i \tau^c_t + s_{i,t})$. Variant C nests A
+($\tau^c = 0$) and B ($c = 0$) as restrictions.
+
 Estimated in Stan via `cmdstanr` with all random walks parameterised
 non-centrally. Weights $w_i$ are the 2025 ABS Weighting Pattern, fixed
-across the sample. Inference uses 4 chains × 1500 warmup + 1500 sampling
-iterations.
+across the sample. A and B use 4 chains × 1500 warmup + 1500 sampling
+iterations; C uses 6 chains × 1500 + 1500 because its two-common-factor
+structure is at the edge of HMC mixing reliability on this sample size.
 
 ### Caveats
 
-- `common_share` in Variant A compares common-INNOVATION variance to
-  sector-TREND innovation variance — an awkward apples-to-oranges metric
-  forced into Variant A for cross-variant comparability. The canonical
-  Stock-Watson interpretation only applies to Variant B.
+- `common_share` in Variants A and C compares common-INNOVATION variance
+  to sector-TREND innovation variance — an awkward apples-to-oranges
+  metric forced into them for cross-variant comparability. The canonical
+  Stock-Watson interpretation only applies to Variant B. (For C it
+  measures the contribution of the *common-trend* component $\tau^c$ only;
+  the common cycle $c$ does not enter the variance ratio.)
 - The model uses fixed expenditure weights from the latest vintage. Real
   weight shifts (e.g., the 2017 reweighting moving methodology to annual
   HFCE-based updates) are not reflected.

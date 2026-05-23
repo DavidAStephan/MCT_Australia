@@ -20,6 +20,7 @@ stan/*.o
 # compiled model binaries sit next to the .stan files, no extension on macOS/Linux
 stan/mct_aus_A
 stan/mct_aus_B
+stan/mct_aus_C
 
 # Cached data and posterior draws (huge; regenerable)
 data/raw/*
