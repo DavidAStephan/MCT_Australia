@@ -94,15 +94,15 @@ jobs:
           restore-keys: ${{ runner.os }}-targets-
 
       # -------------------------------------------------------- R dependencies
-      # Reads deps from DESCRIPTION (Imports/Suggests). No renv.lock in repo.
+      # setup-r-dependencies reads DESCRIPTION Imports/Suggests automatically.
+      # cmdstanr is not on CRAN; install from GitHub (stan-dev/cmdstanr) —
+      # pak resolves the `owner/repo` shorthand natively.
       - name: Install R packages
         if: steps.gate.outputs.run == 'true'
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
           packages: |
-            any::cmdstanr
-            any::tarchetypes
-            any::quarto
+            stan-dev/cmdstanr@v0.9.0
 
       - name: Install CmdStan
         if: steps.gate.outputs.run == 'true'
