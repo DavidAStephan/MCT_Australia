@@ -108,10 +108,14 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         shell: Rscript {0}
         run: |
-          if (!cmdstanr::cmdstan_version(error_on_NA = FALSE) %in% NA) {
-            cat("Using cached CmdStan", as.character(cmdstanr::cmdstan_version()), "\n")
-          } else {
+          ver <- tryCatch(cmdstanr::cmdstan_version(),
+                          error = function(e) NULL,
+                          warning = function(w) NULL)
+          if (is.null(ver) || length(ver) == 0L || is.na(ver)) {
+            cat("No cached CmdStan found - installing.\n")
             cmdstanr::install_cmdstan(cores = 2)
+          } else {
+            cat("Using cached CmdStan", as.character(ver), "\n")
           }
 
       # ----------------------------------------------------------- Rotate fits
