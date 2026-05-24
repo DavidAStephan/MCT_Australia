@@ -14,8 +14,6 @@ suppressMessages({
   library(loo); library(posterior); library(arrow)
 })
 
-# Project source files. When rendered via `tar_quarto()`, the working
-# directory is `dashboard/`, so paths step up one level.
 PROJECT_ROOT <- if (file.exists("_targets.R")) {
   normalizePath(".")
 } else if (file.exists("../_targets.R")) {
@@ -26,20 +24,8 @@ PROJECT_ROOT <- if (file.exists("_targets.R")) {
 for (f in list.files(file.path(PROJECT_ROOT, "R"), "\\.R$", full.names = TRUE)) source(f)
 targets::tar_config_set(store = file.path(PROJECT_ROOT, "_targets"))
 
-tar_load(c(
-  stan_data, weights,
-  trend_A, trend_B, trend_C,
-  common_share_A, common_share_B, common_share_C,
-  sector_contribs_A, sector_contribs_B, sector_contribs_C,
-  fit_A, fit_B, fit_C, variant_comparison
-))
-
-# fit_{A,B,C} targets are `format = "file"` — value is the absolute path
-# string (because we configured the store with an absolute path above).
-# Load the full CmdStanMCMC objects for chunks that use them directly.
+tar_load(c(stan_data, weights, trend_A, common_share_A, sector_contribs_A, fit_A))
 fit_A <- readRDS(fit_A)
-fit_B <- readRDS(fit_B)
-fit_C <- readRDS(fit_C)
 
 latest_month <- max(stan_data$dates)
 latest_trend <- tail(trend_A$median, 1)
@@ -54,7 +40,9 @@ demeaned, annualised scale used by this model. Values are differences from
 each group's 2000–2019 mean inflation rate — add back the long-run mean to
 read as headline % per year. The headline uses Variant A (AR(1) common
 factor), which PSIS-LOO prefers over the Stock-Watson random-walk Variant B
-on this sample — see the variant-comparison section below.
+and the combined Variant C on this sample. This is the **automated monthly
+build** showing the Variant A panels only; the full three-variant
+comparison is available in the manually-built dashboard.
 :::
 
 ## Trend inflation
@@ -80,9 +68,6 @@ plot_trend_band(
 The share of weighted-aggregate inflation variance attributable to the common
 factor (vs sector-specific idiosyncrasies). A reading above 50% means the
 month's inflation move is broad-based; below 50% means it is sector-driven.
-See the caveat in the methodology section about Variant A's common-share
-metric — the apples-to-apples Stock-Watson reading is Variant B's, plotted
-in the variant comparison below.
 
 ```{r common-share}
 plot_common_share(
@@ -114,8 +99,8 @@ prior.
 
 ```{r revisions}
 #| fig-height: 3.5
-prior_fit_path <- "../outputs/draws/fit_A_prior.rds"
-prior_data_path <- "../outputs/draws/stan_data_prior.rds"
+prior_fit_path <- file.path(PROJECT_ROOT, "outputs/draws/fit_A_prior.rds")
+prior_data_path <- file.path(PROJECT_ROOT, "outputs/draws/stan_data_prior.rds")
 
 if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
   fit_A_prior <- readRDS(prior_fit_path)
@@ -125,7 +110,7 @@ if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
   plot_revisions(rev,
                  subtitle = "Solid: current; dashed: prior month vintage")
 } else {
-  cat("_No prior vintage saved at `outputs/draws/fit_A_prior.rds`. The revisions panel becomes active after the next monthly run — see the README for the rotation step._")
+  cat("_No prior vintage saved at `outputs/draws/fit_A_prior.rds`. The revisions panel becomes active after the next monthly run._")
 }
 ```
 
@@ -134,8 +119,7 @@ if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
 If a prior vintage is available, the bar chart below decomposes the change in
 median trend at the most recent date into per-sector contributions. Bars to
 the right of zero are sectors whose contribution to the headline grew between
-vintages (pushing trend up); bars to the left pulled trend down. This is the
-MCMC-native analogue of the NY Fed MCT's Kalman-update attribution.
+vintages (pushing trend up); bars to the left pulled trend down.
 
 ```{r revision-attribution}
 #| fig-height: 3.5
@@ -153,38 +137,7 @@ if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
 }
 ```
 
-## Variant comparison
-
-Three specifications of the common factor are estimated. **Variant A** treats
-the common factor as a stationary AR(1) cycle (its trend is the weighted
-sum of sector-specific drifts). **Variant B** treats it as a random walk —
-the canonical Stock-Watson common trend. **Variant C** combines both —
-a random-walk common trend AND an i.i.d. common cycle, each with its own
-stochastic volatility — nesting A and B as restrictions. On this sample
-LOO prefers A by a wide margin over C, indicating Australian sectoral
-co-movement is overwhelmingly transitory rather than trend-driven.
-
-```{r variant-trend-compare}
-compare_trend_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
-```
-
-```{r variant-cs-compare}
-compare_common_share_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
-```
-
-`r variant_comparison$text`
-
-```{r loo-table}
-#| echo: false
-loo_df <- as.data.frame(variant_comparison$loo_compare)
-loo_df$model <- rownames(loo_df)
-loo_df <- loo_df[, c("model", "elpd_diff", "se_diff", "elpd_loo", "se_elpd_loo",
-                     "p_loo", "se_p_loo")]
-knitr::kable(loo_df, digits = 1, row.names = FALSE,
-             caption = "LOO comparison (elpd, with standard errors).")
-```
-
-## Methodology
+## Methodology (Variant A)
 
 Let $\pi_{i,t}$ be the annualised, demeaned period-on-period inflation of CPI
 group $i \in \{1,\dots,11\}$ in month $t$ on a latent monthly clock. The
@@ -205,62 +158,17 @@ $$
 
 with measurement-noise variance averaged accordingly.
 
-The states evolve as
+The common factor is modelled as a stationary AR(1) cycle:
+$c_t = \rho\, c_{t-1} + \exp(h^c_t/2)\,\varepsilon^c_t$, $|\rho| < 1$.
+Trend is $\tau_t = \sum_i w_i s_{i,t}$.
 
-$$
-\begin{aligned}
-\lambda_{i,t} &= \lambda_{i,t-1} + \sigma_\lambda\, \eta^\lambda_{i,t}, \\
-s_{i,t} &= s_{i,t-1} + \exp(h^s_{i,t}/2)\, \eta^s_{i,t}, \\
-h^c_t &= h^c_{t-1} + \sigma_{h_c}\, \eta^{h_c}_t,
-\end{aligned}
-$$
-
-with $h^s_{i,t}, h^\varepsilon_{i,t}$ analogous. The reference loading
-$\lambda_{\text{Housing},t} = 1$ for all $t$ identifies the common factor's
-sign and scale.
-
-**Variant A** (AR(1) common):
-$c_t = \rho\, c_{t-1} + \exp(h^c_t/2)\,\varepsilon^c_t$, $|\rho| < 1$;
-trend is $\tau_t = \sum_i w_i s_{i,t}$.
-
-**Variant B** (RW common trend):
-$c_t = c_{t-1} + \exp(h^c_t/2)\,\eta^c_t$;
-trend is $\tau_t = (\sum_i w_i \lambda_{i,t})\, c_t + \sum_i w_i s_{i,t}$.
-
-**Variant C** (combined trend + cycle):
-$\tau^c_t = \tau^c_{t-1} + \exp(h^c_t/2)\,\eta^{c}_t$ (random-walk common
-trend) and $c_t = \exp(h^{ec}_t/2)\,\varepsilon^c_t$ (i.i.d. common cycle),
-with sector-specific loadings $\lambda^\tau_i$ on the trend and
-$\lambda^\varepsilon_i$ on the cycle (both time-invariant; Housing pinned
-at 1 for identification). The measurement equation becomes $\pi_{i,t} =
-\lambda^\tau_i \tau^c_t + \lambda^\varepsilon_i c_t + s_{i,t} +
-\exp(h^\varepsilon_{i,t}/2)\,\varepsilon_{i,t}$; trend is $\tau_t =
-\sum_i w_i (\lambda^\tau_i \tau^c_t + s_{i,t})$. Variant C nests A
-($\tau^c = 0$) and B ($c = 0$) as restrictions.
-
-Estimated in Stan via `cmdstanr` with all random walks parameterised
-non-centrally. Weights $w_i$ are the 2025 ABS Weighting Pattern, fixed
-across the sample. A and B use 4 chains × 1500 warmup + 1500 sampling
-iterations; C uses 6 chains × 1500 + 1500 because its two-common-factor
-structure is at the edge of HMC mixing reliability on this sample size.
-
-### Caveats
-
-- `common_share` in Variants A and C compares common-INNOVATION variance
-  to sector-TREND innovation variance — an awkward apples-to-oranges
-  metric forced into them for cross-variant comparability. The canonical
-  Stock-Watson interpretation only applies to Variant B. (For C it
-  measures the contribution of the *common-trend* component $\tau^c$ only;
-  the common cycle $c$ does not enter the variance ratio.)
-- The model uses fixed expenditure weights from the latest vintage. Real
-  weight shifts (e.g., the 2017 reweighting moving methodology to annual
-  HFCE-based updates) are not reflected.
-- PSIS-LOO Pareto-k diagnostics for state-space models often flag many high
-  values; treat the LOO ranking as indicative.
+Estimated in Stan via `cmdstanr` with 4 chains × 1500 warmup + 1500 sampling
+iterations and all random walks parameterised non-centrally.
 
 ---
 
 ::: {style="color:#666; font-size:0.85rem;"}
-Built with Stan, cmdstanr, targets, and Quarto. Source:
-[github.com/...] · Methodology and code in the project's `CLAUDE.md` brief.
+Automated monthly build (Variant A only). Full three-variant comparison and
+LOO methodology section are in the manually-built dashboard. Built with
+Stan, cmdstanr, targets, and Quarto.
 :::

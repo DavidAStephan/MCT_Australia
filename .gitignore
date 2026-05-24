@@ -38,8 +38,10 @@ dashboard/_site/
 dashboard/.quarto/
 dashboard/*_files/
 
-# targets store
+# targets store + per-machine config
 _targets/
+_targets.yaml
+dashboard/_targets.yaml
 
 # OS / editor cruft
 .DS_Store

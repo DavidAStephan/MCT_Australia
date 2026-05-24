@@ -5,6 +5,32 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
+## Session update (2026-05-24)
+
+- Dashboard now renders end-to-end via `Rscript -e 'targets::tar_make()'`.
+  Output at `dashboard/_site/index.html`.
+- Targets pipeline refactored so the three fits don't duplicate into
+  `_targets/objects/`. `fit_{A,B,C}` are `format = "file"` targets returning
+  the absolute path to `outputs/draws/fit_X.rds`; downstream targets call
+  `readRDS()` inline. End result: `_targets/` stays under 1 MB; the only
+  copies of the fits on disk are the canonical ones in `outputs/draws/`.
+  To refit a new vintage, see the comment block above the fit_X targets
+  in `_targets.R`.
+- Deleted as unused: `outputs/draws/fit_{A,B,C}_slim.parquet` (1.5 GB total).
+  The slim-parquet exporter (`export_fit_parquet`, `read_slim_parquet`) is
+  still present in `R/` but has no live callers — fine to delete next
+  cleanup pass.
+- `tar_quarto(dashboard, ..., working_directory = "dashboard")` is now
+  required because `dashboard/_quarto.yml` makes quarto treat `dashboard/`
+  as the project root; without it tar_quarto and quarto disagree on output
+  paths. Project-root detection added at the top of `dashboard/index.qmd`
+  so both `tar_make` and standalone `quarto render dashboard/index.qmd`
+  work from any pwd.
+- Disk total dropped from ~14.5 GB → ~6.5 GB after cleanup. Future
+  `tar_make` runs won't re-duplicate.
+- Remote is already configured (`DavidAStephan/MCT_Australia`); `main`
+  pushed. Action #3 in the original handoff is done.
+
 ## State at session end (2026-05-23)
 
 - All 10 brief steps landed; Variant C added on top (combined common-trend
