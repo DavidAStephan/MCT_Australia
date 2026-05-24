@@ -25,6 +25,8 @@ stan/mct_aus_C
 # Cached data and posterior draws (huge; regenerable)
 data/raw/*
 !data/raw/.gitkeep
+# Keep the weights workbook in-repo (small, rarely changes — ABS annual)
+!data/raw/cpi_weights_*.xlsx
 outputs/draws/*
 !outputs/draws/.gitkeep
 outputs/figures/*
