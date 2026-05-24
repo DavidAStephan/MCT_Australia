@@ -36,28 +36,51 @@ list(
   tar_target(stan_data, build_stan_data(infl_demeaned, weights = weights)),
 
   # -------------------- Stan fits --------------------
-  # HYDRATION MODE: the fits at outputs/draws/fit_{A,B,C}.rds were produced
-  # standalone (see next_session.md) and we treat them as the source of truth
-  # so targets doesn't re-fit (~7 h total).
+  # fit_X targets are `format = "file"` — their *value* is the absolute path
+  # string, not the loaded CmdStanMCMC object. This avoids duplicating
+  # ~7 GB of fits into _targets/objects/. Downstream targets (and the
+  # dashboard) call readRDS(fit_X) when they need the object; it's held in
+  # worker memory only for the duration of that target.
   #
-  # fit_X targets are `format = "file"` — their value is the *path string*,
-  # not the loaded object. This avoids duplicating ~7 GB of CmdStanMCMC
-  # objects into _targets/objects/. Downstream targets (and dashboard) call
-  # readRDS(fit_X) on first use; the loaded object is held in worker memory
-  # only for the duration of that target.
+  # The command fits-and-saves on cache miss. On the local workstation
+  # (where the rds files already exist from standalone runs) targets just
+  # validates the file hash and skips. On a clean runner the command runs
+  # fit_mct() and saves the rds. When stan_data changes (new ABS vintage)
+  # targets invalidates and refits.
   #
-  # To refit a new vintage, change each fit_X target's command to call
-  # fit_mct(stan_data, variant = "X", save_dir = "outputs/draws") and
-  # return the saved path. See scripts/run_real_fits.R for the standalone
-  # fit pattern.
-  # Absolute paths so readRDS(fit_X) works from any working directory
-  # (the dashboard qmd renders with pwd = dashboard/).
-  tar_target(fit_A, normalizePath("outputs/draws/fit_A.rds"),
-             format = "file"),
-  tar_target(fit_B, normalizePath("outputs/draws/fit_B.rds"),
-             format = "file"),
-  tar_target(fit_C, normalizePath("outputs/draws/fit_C.rds"),
-             format = "file"),
+  # `cue = tar_cue(command = FALSE)` prevents command-text changes from
+  # triggering refits — useful during pipeline refactors so cached fits
+  # aren't invalidated by cosmetic edits to this block.
+  tar_target(
+    fit_A, {
+      path <- "outputs/draws/fit_A.rds"
+      if (!file.exists(path)) fit_mct(stan_data, variant = "A",
+                                      save_dir = "outputs/draws")
+      normalizePath(path)
+    },
+    format = "file",
+    cue = tar_cue(command = FALSE)
+  ),
+  tar_target(
+    fit_B, {
+      path <- "outputs/draws/fit_B.rds"
+      if (!file.exists(path)) fit_mct(stan_data, variant = "B",
+                                      save_dir = "outputs/draws")
+      normalizePath(path)
+    },
+    format = "file",
+    cue = tar_cue(command = FALSE)
+  ),
+  tar_target(
+    fit_C, {
+      path <- "outputs/draws/fit_C.rds"
+      if (!file.exists(path)) fit_mct(stan_data, variant = "C",
+                                      save_dir = "outputs/draws")
+      normalizePath(path)
+    },
+    format = "file",
+    cue = tar_cue(command = FALSE)
+  ),
 
   # -------------------- Post-processing --------------------
   tar_target(trend_A, trend_path(readRDS(fit_A), stan_data$dates)),
