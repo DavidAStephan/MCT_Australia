@@ -101,7 +101,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          packages: |
+          # `packages` defaults to `local::.` which installs the project
+          # (and its DESCRIPTION Imports) — we want that. cmdstanr is added
+          # via `extra-packages` because it's not on CRAN.
+          extra-packages: |
             stan-dev/cmdstanr@v0.9.0
 
       - name: Install CmdStan
