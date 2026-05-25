@@ -27,6 +27,47 @@ default_init <- function(stan_data, variant) {
       z_c     = rep(0, T_)
     ))
   }
+  if (variant %in% c("Ac", "Act")) {
+    # Variants Ac and Act (constant-lambda A; Act = Ac + reduce_sum
+    # within-chain parallelism). Same parameter shape — no z_lambda, no
+    # sigma_lambda, no lambda_init; loadings are a time-invariant N-1
+    # vector lambda_const.
+    return(list(
+      mu_hc = 0,
+      mu_hs = rep(0, N),
+      mu_he = rep(0, N),
+      sigma_hc = 0.03,
+      sigma_hs = rep(0.03, N),
+      sigma_he = rep(0.03, N),
+      rho = 0.5,
+      s_init = rep(0, N),
+      lambda_const = rep(1, N - 1),
+      z_hc = rep(0, T_),
+      z_hs = matrix(0, T_, N),
+      z_he = matrix(0, T_, N),
+      z_s  = matrix(0, T_, N),
+      z_c  = rep(0, T_)
+    ))
+  }
+  if (variant %in% c("Akf", "Akfs")) {
+    # Variants Akf and Akfs (Phase 3: KF marginalization; Akfs = sparse
+    # implementation of the same model). No z_c, no z_s — these are
+    # marginalized by the Kalman filter. Same SV innovations as Ac.
+    return(list(
+      mu_hc = 0,
+      mu_hs = rep(0, N),
+      mu_he = rep(0, N),
+      sigma_hc = 0.03,
+      sigma_hs = rep(0.03, N),
+      sigma_he = rep(0.03, N),
+      rho = 0.5,
+      s_init = rep(0, N),
+      lambda_const = rep(1, N - 1),
+      z_hc = rep(0, T_),
+      z_hs = matrix(0, T_, N),
+      z_he = matrix(0, T_, N)
+    ))
+  }
   init <- list(
     mu_hc = 0,
     mu_hs = rep(0, N),
@@ -67,7 +108,7 @@ default_init <- function(stan_data, variant) {
 #'   `{save_dir}/fit_{variant}.rds`. Default `outputs/draws`.
 #' @return A CmdStanMCMC object.
 fit_mct <- function(stan_data,
-                    variant = c("A", "B", "C"),
+                    variant = c("A", "B", "C", "Ac", "Act", "Akf", "Akfs"),
                     model_dir = "stan",
                     chains = 4,
                     parallel_chains = chains,
@@ -77,10 +118,22 @@ fit_mct <- function(stan_data,
                     max_treedepth = 12,
                     seed = 20260522,
                     init = NULL,
+                    # Mass-matrix adaptation windowing (plan.md #5). NULL =
+                    # use Stan defaults (75/50/25). Larger init+term buffers
+                    # give the dense mass matrix more time to converge,
+                    # which often pays for itself on stiff geometries like
+                    # the SV+TVP state-space here.
+                    init_buffer = NULL,
+                    term_buffer = NULL,
+                    window = NULL,
+                    # Within-chain parallelism (plan.md #3). Only used by
+                    # threaded variants ("Act"). NULL = 1 = no threading.
+                    threads_per_chain = NULL,
                     save_dir = "outputs/draws") {
   variant <- match.arg(variant)
   model_path <- file.path(model_dir, paste0("mct_aus_", variant, ".stan"))
   stopifnot("Stan model file not found" = file.exists(model_path))
+  threaded_variants <- c("Act")
 
   stan_input <- stan_data[c(
     "T", "N", "ref", "w",
@@ -96,7 +149,12 @@ fit_mct <- function(stan_data,
     init <- rep(list(init), chains)
   }
 
-  m <- cmdstanr::cmdstan_model(model_path)
+  cpp_opts <- if (variant %in% threaded_variants) {
+    list(stan_threads = TRUE)
+  } else {
+    NULL
+  }
+  m <- cmdstanr::cmdstan_model(model_path, cpp_options = cpp_opts)
 
   message(sprintf(
     "[fit_mct/%s] T=%d N=%d  n_obs_m=%d n_obs_q=%d  chains=%d  warmup=%d  sampling=%d  adapt_delta=%.2f",
@@ -106,7 +164,7 @@ fit_mct <- function(stan_data,
   ))
 
   t0 <- Sys.time()
-  fit <- m$sample(
+  sample_args <- list(
     data = stan_input,
     chains = chains,
     parallel_chains = parallel_chains,
@@ -119,6 +177,11 @@ fit_mct <- function(stan_data,
     refresh = max(50, (iter_warmup + iter_sampling) %/% 20),
     show_messages = TRUE
   )
+  if (!is.null(init_buffer))       sample_args$init_buffer       <- init_buffer
+  if (!is.null(term_buffer))       sample_args$term_buffer       <- term_buffer
+  if (!is.null(window))            sample_args$window            <- window
+  if (!is.null(threads_per_chain)) sample_args$threads_per_chain <- threads_per_chain
+  fit <- do.call(m$sample, sample_args)
   elapsed <- as.numeric(difftime(Sys.time(), t0, units = "mins"))
   message(sprintf("[fit_mct/%s] sampled in %.1f min", variant, elapsed))
 

@@ -17,10 +17,16 @@ renv/staging/
 *.exe
 stan/*.hpp
 stan/*.o
-# compiled model binaries sit next to the .stan files, no extension on macOS/Linux
+# Compiled model binaries sit next to the .stan files (no extension on
+# macOS/Linux). Add each variant explicitly — globbing "no-extension"
+# files in a directory that also has .stan files is awkward in gitignore.
 stan/mct_aus_A
 stan/mct_aus_B
 stan/mct_aus_C
+stan/mct_aus_Ac
+stan/mct_aus_Act
+stan/mct_aus_Akf
+stan/mct_aus_Akfs
 
 # Cached data and posterior draws (huge; regenerable)
 data/raw/*

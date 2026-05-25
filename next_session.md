@@ -5,6 +5,26 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
+## Session update (2026-05-26) — speedup exploration
+
+Full details in [`plan.md`](plan.md) (Phase 1-3 experiments) and
+[`gibbs_port_plan.md`](gibbs_port_plan.md) (Phase 4 / Gibbs port plan).
+
+**TL;DR:** explored 4 speedup variants (constant-λ Ac, threaded Act,
+KF-marginalized Akf, sparse-KF Akfs). All math validated; posteriors
+match the baseline Variant A within MC noise. **None of them beat A in
+production-equivalent settings on this M1 machine.** Best result:
+Akfs ≈ 4× faster than dense Akf but still ~8× slower than Ac. The
+binding constraint is Stan's autodiff overhead on matrix-shaped state.
+
+**Production unchanged.** Cron still uses Variant A. Local
+`tar_make()` still uses Variant A. The four experimental Stan
+variants exist but aren't wired into the targets pipeline.
+
+**Phase 4 (Gibbs port from NY Fed MATLAB) deferred** with a detailed
+implementation plan in `gibbs_port_plan.md`. Decision triggers spelled
+out there; until one fires, don't start.
+
 ## Session update (2026-05-24)
 
 - Dashboard now renders end-to-end via `Rscript -e 'targets::tar_make()'`.
