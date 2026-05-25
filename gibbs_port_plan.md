@@ -115,19 +115,77 @@ so the returned value is the joint log-density of observed data only
 (matches `dmvnorm`). If we want to cross-check against MATLAB output
 later, add back `0.5 · n_missing · log(2π)` to the R port's value.
 
-### Step 3 — Simulation smoother (`simulation_smoother.m` → `R/gibbs/sim_smoother.R`)
+### Step 3 — Simulation smoother (`simulation_smoother.m` → `R/gibbs/sim_smoother.R`) ✅ DONE 2026-05-26
 
-**Status: pending.** Depends on `fast_smoother.m` (232 lines), which is
-the next major port task. The simulation smoother itself is short (70
-lines, Durbin-Koopman algorithm) but uses `fast_smoother` as a
-building block.
+Ported via two files:
 
-Algorithm (Durbin & Koopman 2002):
-1. Simulate from auxiliary SSM with zero mean: `(Y_sim, states_sim)`
-2. Run `fast_smoother(Y - Y_sim, SSM)` → `(states_smooth)`
-3. Draw of states = `states_sim + states_smooth`
+- [`R/gibbs/fast_smoother.R`](R/gibbs/fast_smoother.R) — disturbance +
+  state smoother (port of fast_smoother.m §1+§2, ~95 of the original
+  232 lines). MSE recursions (§3) intentionally **NOT** ported; not
+  needed by the Gibbs loop. Add later if/when we want uncertainty
+  bands on smoothed states.
+- [`R/gibbs/sim_smoother.R`](R/gibbs/sim_smoother.R) — Durbin-Koopman
+  simulation smoother (port of simulation_smoother.m, 70 lines).
 
-Original step text:
+Tests at
+[`tests/testthat/gibbs/test-smoother.R`](tests/testthat/gibbs/test-smoother.R)
+(9 new, 16 total at this point):
+- fast_smoother outputs correct shapes
+- simulation_smoother runs and returns valid draws
+- **CRITICAL**: average of 500 simulation_smoother draws converges to
+  fast_smoother's point estimate within MC tolerance. This validates
+  that sim_smoother actually draws from the correct posterior.
+- Both handle missing observations without crashing.
+
+### Step 4 — Kim-Shephard SV update ✅ DONE 2026-05-26
+
+Ported as [`R/gibbs/update_vol.R`](R/gibbs/update_vol.R) (158 lines).
+Mixture-component constants (probs/means/vars × 10) copied verbatim
+from MATLAB — calibrated to log(χ²₁), do not edit.
+
+Tests at
+[`tests/testthat/gibbs/test-update-vol.R`](tests/testthat/gibbs/test-update-vol.R)
+(4 new, 29 total at this point):
+- Runs on simulated SV data
+- **CRITICAL**: 500-burn + 2000-draw Gibbs chain recovers truth log-σ
+  path with no systematic bias (|log bias| < 0.20) AND positive
+  correlation with truth (>0.5).
+- Handles missing data.
+- Mixture constants sum to 1 and stdvs = √vars (defensive).
+
+### Step 5 — Hyperparameter updates ✅ PARTIAL DONE 2026-05-26
+
+`update_gam.m` → [`R/gibbs/update_gam.R`](R/gibbs/update_gam.R) (26 →
+33 lines). Inverse-Gamma conjugate update for SV step sizes.
+Vectorised over N independent gammas (Tx N input ⇒ length-N output).
+
+`update_theta.m` (MA(q) coef update) **NOT** ported — Variant A
+has no MA errors. Port when/if we add MA(3) noise to match NY Fed.
+
+Tests at
+[`tests/testthat/gibbs/test-update-gam.R`](tests/testthat/gibbs/test-update-gam.R)
+(4 new, 33 total at this point):
+- Runs on vector and matrix input
+- **CRITICAL**: posterior concentrates around truth as T → 10K
+- Reduces to prior when T = 0 (defensive)
+
+### Step 6 — Time-varying loadings ✅ DONE 2026-05-26
+
+Ported as [`R/gibbs/update_tvcoef.R`](R/gibbs/update_tvcoef.R) (101 →
+~120 lines). Carter-Kohn FFBS on the (N*K)-dim vec(alpha_t) RW state.
+
+Tests at
+[`tests/testthat/gibbs/test-update-tvcoef.R`](tests/testthat/gibbs/test-update-tvcoef.R)
+(3 new, 42 total at this point):
+- Runs on small TVP regression
+- **CRITICAL**: FFBS draws recover true alpha path with correlation >0.8
+- Handles missing observations
+
+Note: our Variant Ac uses CONSTANT loadings, so this isn't strictly
+needed for v1 of the Gibbs port. Port done to keep the option open
+for adding TVP loadings later.
+
+Original step text (preserved for reference; the rest below is unchanged):
 
 Forward filter + backward sample (Carter-Kohn). ~1 day.
 
