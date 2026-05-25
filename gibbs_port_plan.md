@@ -95,25 +95,39 @@ code is unchanged.
 
 ## Port order (low risk first; each step is independently validatable)
 
-### Step 1 — Simulator (`simulate_SSM.m` → `R/sim_ssm.R`)
+### Step 1 — Simulator (`simulate_SSM.m` → `R/gibbs/sim_ssm.R`) ✅ DONE 2026-05-26
 
-Lift the MATLAB simulator verbatim. ~1 day.
+Ported as [`R/gibbs/sim_ssm.R`](R/gibbs/sim_ssm.R). Tests at
+[`tests/testthat/gibbs/test-sim-and-kalman.R`](tests/testthat/gibbs/test-sim-and-kalman.R)
+verify output shape + that simulated AR(1) data hits the right
+stationary variance (~10% MC tolerance).
 
-Validation: simulated data should pass the existing
-`tests/testthat/test-stan-simulated.R` recovery test when fit by
-Variant A in Stan. If the existing Stan model recovers the truth on
-ported-sim data, the simulator is correct.
+### Step 2 — Kalman filter (`Kalman_filter.m` → `R/gibbs/kalman.R`) ✅ DONE 2026-05-26
 
-### Step 2 — Kalman filter (`Kalman_filter.m` → `R/kalman.R`)
+Ported as [`R/gibbs/kalman.R`](R/gibbs/kalman.R). Tests verify
+log-likelihood matches the analytic joint Gaussian density on a scalar
+AR(1) SSM, both with and without missing observations.
 
-Numerical recursions only — no random draws. ~1 day.
+**Convention difference from MATLAB**: the MATLAB version uses a fixed
+`-(T·N/2)·log(2π)` constant regardless of missing data. The R port
+accumulates the constant per-step based on actual non-missing counts,
+so the returned value is the joint log-density of observed data only
+(matches `dmvnorm`). If we want to cross-check against MATLAB output
+later, add back `0.5 · n_missing · log(2π)` to the R port's value.
 
-Validation: cross-check log-likelihood against the Akf forward filter
-on the same data (within numerical tolerance). The Akf Stan code at
-`stan/mct_aus_Akf.stan` already implements the same recursion in a
-different language.
+### Step 3 — Simulation smoother (`simulation_smoother.m` → `R/gibbs/sim_smoother.R`)
 
-### Step 3 — Simulation smoother (`simulation_smoother.m` → `R/sim_smoother.R`)
+**Status: pending.** Depends on `fast_smoother.m` (232 lines), which is
+the next major port task. The simulation smoother itself is short (70
+lines, Durbin-Koopman algorithm) but uses `fast_smoother` as a
+building block.
+
+Algorithm (Durbin & Koopman 2002):
+1. Simulate from auxiliary SSM with zero mean: `(Y_sim, states_sim)`
+2. Run `fast_smoother(Y - Y_sim, SSM)` → `(states_smooth)`
+3. Draw of states = `states_sim + states_smooth`
+
+Original step text:
 
 Forward filter + backward sample (Carter-Kohn). ~1 day.
 
