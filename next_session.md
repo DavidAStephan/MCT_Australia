@@ -5,7 +5,37 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
-## Session update (2026-05-26) — speedup exploration
+## Session update (2026-05-26) — Gibbs port Steps 1-6 done
+
+Steps 1-6 of [`gibbs_port_plan.md`](gibbs_port_plan.md) ported and
+tested. R code at [`R/gibbs/`](R/gibbs/), tests at
+[`tests/testthat/gibbs/`](tests/testthat/gibbs/) (**42 passing**).
+
+| Step | Port | Status |
+|------|------|--------|
+| 1 | `simulate_SSM.m` → `sim_ssm.R` | ✅ |
+| 2 | `Kalman_filter.m` → `kalman.R` | ✅ |
+| 3 | `fast_smoother.m` + `simulation_smoother.m` → `fast_smoother.R` + `sim_smoother.R` | ✅ (MSE recursions skipped — not needed by Gibbs) |
+| 4 | `update_vol.m` → `update_vol.R` (Kim-Shephard SV) | ✅ |
+| 5 | `update_gam.m` → `update_gam.R` (hyperparams) | ✅ (`update_theta.m` for MA(q) skipped — we don't use MA errors) |
+| 6 | `update_tvcoef.m` → `update_tvcoef.R` (TVP loadings) | ✅ |
+| 7 | `estimate_MCT.m` → main Gibbs loop | ⏳ pending (BIG — 487 lines) |
+| 8 | `mct_gibbs_fit` S3 class for downstream compatibility | ⏳ pending |
+| 9 | AR(1) + mixed-frequency adaptation for AU | ⏳ pending |
+| 10 | End-to-end validation vs Variant Ac Stan fit | ⏳ pending |
+
+Critical correctness validations in tests:
+- KF log-likelihood matches analytic Gaussian density (with + without missing data)
+- sim_smoother draws average to fast_smoother point (validates posterior draws)
+- Kim-Shephard SV recovers truth path with no bias (|log bias| < 0.20, r > 0.5)
+- update_gam concentrates around truth as T grows (T=10K → <2% error)
+- update_tvcoef recovers TVP path with r > 0.8
+
+**Investigation also done:** [`investigation_ar1_vs_rw.md`](investigation_ar1_vs_rw.md)
+explains why AR(1) beats RW in our model. Likely a regime-change artifact
+of the 1990-96 disinflation. Four follow-up experiments proposed.
+
+## Session update (2026-05-25/26) — speedup exploration
 
 Full details in [`plan.md`](plan.md) (Phase 1-3 experiments) and
 [`gibbs_port_plan.md`](gibbs_port_plan.md) (Phase 4 / Gibbs port plan).
@@ -20,10 +50,6 @@ binding constraint is Stan's autodiff overhead on matrix-shaped state.
 **Production unchanged.** Cron still uses Variant A. Local
 `tar_make()` still uses Variant A. The four experimental Stan
 variants exist but aren't wired into the targets pipeline.
-
-**Phase 4 (Gibbs port from NY Fed MATLAB) deferred** with a detailed
-implementation plan in `gibbs_port_plan.md`. Decision triggers spelled
-out there; until one fires, don't start.
 
 ## Session update (2026-05-24)
 
