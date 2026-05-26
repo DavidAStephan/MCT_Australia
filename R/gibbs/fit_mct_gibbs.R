@@ -23,6 +23,7 @@
 #' @return List with `draws` (collected samples) and `config`.
 fit_mct_gibbs <- function(y,
                           obs_type = NULL,
+                          q_MA = 0L,
                           ref = 1L,
                           n_burn = 1000L,
                           n_draw = 2000L,
@@ -33,10 +34,15 @@ fit_mct_gibbs <- function(y,
   T_ <- nrow(y)
   N  <- ncol(y)
 
-  # Dispatch: if obs_type is given (Step 9 mixed-freq path), use
-  # gibbs_sweep_mixed + augmented SSM. Otherwise (Step 7 monthly-only
-  # path), use the simpler gibbs_sweep + N+1-dim SSM.
+  # Dispatch:
+  #   q_MA > 0           -> Step 12 MA path (gibbs_sweep_ma; monthly-only)
+  #   obs_type != NULL   -> Step 9 mixed-freq path (gibbs_sweep_mixed)
+  #   else               -> Step 7 monthly-only basic (gibbs_sweep)
   mixed_freq <- !is.null(obs_type)
+  ma_path    <- q_MA > 0L
+  if (mixed_freq && ma_path) {
+    stop("Combined mixed-freq + MA path not yet supported. Use either.")
+  }
   if (mixed_freq) {
     stopifnot(all(dim(obs_type) == c(T_, N)),
               all(obs_type %in% c(0L, 1L, 2L)))
@@ -59,7 +65,10 @@ fit_mct_gibbs <- function(y,
     # bias of the conditional Gibbs path. Set FALSE to recover the
     # biased-but-faster conditional-Gibbs behaviour for A/B testing.
     use_marginal_mh_rho = TRUE,
-    rho_prop_sd         = 0.05
+    rho_prop_sd         = 0.05,
+    # MA(q) path config (used only when q_MA > 0)
+    q_MA                = q_MA,
+    theta_prec_prior    = 0.1
   )
   if (!is.null(config)) {
     for (k in names(config)) cfg[[k]] <- config[[k]]
@@ -81,8 +90,12 @@ fit_mct_gibbs <- function(y,
       rho       = 0.5,
       lambda    = rep(1, N)
     )
+    if (ma_path) state$theta <- matrix(0, N, q_MA)
   } else {
     state <- init
+    if (ma_path && is.null(state$theta)) {
+      state$theta <- matrix(0, N, q_MA)
+    }
   }
   state$lambda[ref] <- 1  # enforce identification
 
@@ -100,6 +113,9 @@ fit_mct_gibbs <- function(y,
     rho       = numeric(n_keep),
     lambda    = matrix(NA_real_, N, n_keep)
   )
+  if (ma_path) {
+    draws$theta <- array(NA_real_, c(N, q_MA, n_keep))
+  }
 
   # Track rho-MH acceptance rate (post-burn-in only)
   rho_n_accept <- 0L
@@ -108,7 +124,9 @@ fit_mct_gibbs <- function(y,
   t0 <- Sys.time()
   total_iter <- n_burn + n_draw
   for (i in seq_len(total_iter)) {
-    state <- if (mixed_freq) {
+    state <- if (ma_path) {
+      gibbs_sweep_ma(y, state, cfg)
+    } else if (mixed_freq) {
       gibbs_sweep_mixed(y, obs_type, state, cfg)
     } else {
       gibbs_sweep(y, state, cfg)
@@ -135,6 +153,7 @@ fit_mct_gibbs <- function(y,
         draws$gamma_eps[, k]  <- state$gamma_eps
         draws$rho[k]          <- state$rho
         draws$lambda[, k]     <- state$lambda
+        if (ma_path) draws$theta[, , k] <- state$theta
       }
     }
 
