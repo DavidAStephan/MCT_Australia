@@ -5,7 +5,63 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
-## Session update (2026-05-27) — Step 11: Gibbs validated; "rho bias" was a faulty premise
+## Session update (2026-05-27 evening) — Steps 12 + 13: MA(q) + outliers ported
+
+Major model-quality additions to the Gibbs port. **120/120 tests pass.**
+
+### Step 12 — MA(q) measurement errors (monthly-only)
+
+State-augmented SSM with (q+1) eps lags per sector. NY Fed convention
+(eps state's variance = sigma_eps^2). 3 new files:
+[`R/gibbs/update_theta.R`](R/gibbs/update_theta.R),
+[`R/gibbs/build_ssm_ma.R`](R/gibbs/build_ssm_ma.R),
+[`R/gibbs/gibbs_sweep_ma.R`](R/gibbs/gibbs_sweep_ma.R).
+
+Use via `fit_mct_gibbs(y, q_MA = 3, ...)`. **LIMITATION**:
+monthly-only — combined mixed-freq + MA path NOT implemented (state
+dim would be ~92 at N=11, q=3). For AU production this means MA
+can only fit the post-Apr-2024 monthly slice (T=23). Sim-validated
+capability; not yet production-ready for AU.
+
+### Step 13 — Outlier scale mixture (mixed-freq compatible)
+
+Discrete per-obs scales (40-point grid 1→10) inflate the obs noise.
+Integrates cleanly with quarterly observations because scales are
+per-obs scalars, not state-augmented. 2 new files:
+[`R/gibbs/update_scl.R`](R/gibbs/update_scl.R),
+[`R/gibbs/update_ps.R`](R/gibbs/update_ps.R).
+
+Use via `fit_mct_gibbs(y, obs_type = ot, config = list(use_outliers = TRUE), ...)`.
+Tests verify it flags 3+/5 injected outliers with <15% false-positive
+rate. **READY FOR REAL AU DATA** — directly addresses CLAUDE.md's
+flagged volatile sub-indices (fuel, fruit & veg, holiday travel).
+
+### Headline result
+
+The Gibbs port is now methodologically AT PARITY with NY Fed's MCT
+model on the things that matter for AU (mixed-freq + outliers), with
+MA(q) available as a monthly-only capability for future use.
+
+**Next session targets** (in order of value):
+
+1. **Real-data outlier benchmark** — fit `fit_mct_gibbs(use_outliers = TRUE)`
+   on the cached `outputs/draws/stan_data.rds` (real AU CPI, T=435,
+   N=11). Expected ~25-30 min single chain. Check posterior median
+   `s_outlier` for known-volatile sectors (transport, recreation,
+   alcohol) at fuel-spike dates (2022-2023) — should flag them.
+
+2. **LOO comparison: baseline vs +outliers** — compute pointwise
+   log-likelihood for both fits and compare via loo::loo_compare.
+   Tells us empirically whether outliers improve AU model fit.
+
+3. **(Stretch) Extend MA to mixed-freq** — would unlock MA on full
+   T=435 AU data instead of just T=23 monthly tail. State dim ~92;
+   needs careful implementation but no new conceptual work.
+
+4. **(Stretch) Refit Stan Variant Ac for the apples-to-apples
+   comparison** that was deferred at end of Step 11.
+
+## Session update (2026-05-27 morning) — Step 11: Gibbs validated; "rho bias" was a faulty premise
 
 **Correction to previous sessions:** I had claimed Stan's rho on real
 ABS data was ~0.7, then spent time diagnosing/fixing a "rho bias" in
