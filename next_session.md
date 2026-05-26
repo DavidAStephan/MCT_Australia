@@ -5,6 +5,53 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
+## Session update (2026-05-26 late) — Gibbs port done end-to-end on real data; 18× speedup with caveat
+
+**The Gibbs port now works end-to-end on production-scale real ABS data.**
+Steps 8, 9a, and 10 of [`gibbs_port_plan.md`](gibbs_port_plan.md) closed
+this session. 85+ passing tests across `tests/testthat/gibbs/`.
+
+**Headline numbers (T=435, N=11):**
+
+| | Stan Variant A | Gibbs | Note |
+|---|---|---|---|
+| Wall time | **93 min** | **5.2 min** | **~18× faster** ✓ |
+| rho posterior median | ~0.70 | **0.21** [-0.12, 0.51] | FFBS-noise bias |
+| Trend latest-t median | 0.647 | 1.048 | Diverges with rho |
+| Trend cor across t | — | 0.685 | Shape similar |
+| Trend MAE | — | 0.486 | Level differs |
+| Lambda medians | various | 0.91–1.03 | Matches Stan pattern |
+
+**Production recommendation:** Stan stays headline; the monthly cron
+and dashboard are **unchanged**. Gibbs is a fast prototyping /
+sensitivity tool, not a production estimator — until the rho bias is
+fixed via marginal MH (mitigation #1 in `gibbs_port_plan.md`,
+estimated 1-2 days).
+
+**Files added this session:**
+- [`R/gibbs/mct_gibbs_fit.R`](R/gibbs/mct_gibbs_fit.R) — S3 wrapper mirroring cmdstanr API
+- [`R/gibbs/build_ssm_mixed.R`](R/gibbs/build_ssm_mixed.R) — augmented 3(N+1)-dim SSM for mixed-freq
+- [`R/gibbs/gibbs_sweep_mixed.R`](R/gibbs/gibbs_sweep_mixed.R) — mixed-freq Gibbs sweep
+- [`scripts/step10_gibbs_real_data.R`](scripts/step10_gibbs_real_data.R) — real-data benchmark
+- [`scripts/diagnose_rho_bias.R`](scripts/diagnose_rho_bias.R) — bias diagnostic
+- [`scripts/diagnose_gibbs_mixing.R`](scripts/diagnose_gibbs_mixing.R) — mixing investigation
+
+**Next session targets** (in order of expected value):
+
+1. **rho bias fix via marginal MH** — propose rho from N(current, prop_sd),
+   accept via p(y|rho) integrating out c with the Kalman filter. Should
+   recover the true posterior of rho and fix the trend-level gap to Stan.
+   Effort: 1-2 days. Path documented in `gibbs_port_plan.md` Step 7
+   update block.
+
+2. **Wire the Gibbs path into `_targets.R`** as an alternative variant
+   ("Ag" for Gibbs?) so it can be invoked via `tar_make()` and the
+   dashboard. Only worth doing AFTER the bias fix.
+
+3. **Validate via the existing LOO comparison helper** in
+   `R/compare_variants.R`. Should be a drop-in given the
+   mct_gibbs_fit S3 wrapper exposes `$draws(variables = "log_lik")`.
+
 ## Session update (2026-05-26 evening) — Gibbs port Step 7 done; end-to-end works
 
 `fit_mct_gibbs()` works end-to-end on simulated MCT Variant A data
