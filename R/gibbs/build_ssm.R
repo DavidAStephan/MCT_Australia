@@ -62,10 +62,15 @@ build_mct_ssm <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
     Sigma_eps[, , t] <- diag(sigma_eps[t, ]^2, nrow = N)
   }
 
-  # Initial state: c_1 stationary AR(1); s_{i,1} diffuse-ish
+  # Initial state. Originally we used the stationary AR(1) variance
+  # for c_1: Sigma_1[1,1] = sigma_c^2 / (1 - rho^2). That created a
+  # self-fulfilling bias: when rho is small early in the chain, c_1
+  # is forced near 0 (small stationary variance), which biases c-draws
+  # small, which biases rho small. Use a diffuse prior on c_1 instead;
+  # the FFBS will learn the right scale from the data.
   mu_1 <- rep(0, M)
   Sigma_1 <- diag(M)
-  Sigma_1[1, 1] <- sigma_c[1]^2 / (1 - rho^2)
+  Sigma_1[1, 1] <- 100      # diffuse on c_1
   for (i in 1:N) Sigma_1[1 + i, 1 + i] <- var_s_init
 
   list(

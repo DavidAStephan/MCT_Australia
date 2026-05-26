@@ -268,6 +268,49 @@ will need longer chains AND/OR a reparameterisation.
 - Initialise sigma_c larger than sigma_s (start in the AR(1)-dominant
   regime)
 
+**2026-05-26 update — rho bias diagnosed.** Per
+`scripts/diagnose_rho_bias.R`:
+
+- A. `.update_rho(truth$c, truth$sigma_c)` → 1000 draws, median **0.658**
+  (truth 0.7; remaining gap is OLS finite-sample bias + N(0.5, 0.3)
+  prior shrinkage). The rho update math is correct.
+- B. Gibbs converges to correct `sigma_c` (posterior median 0.40 vs
+  truth 0.4). SV estimation works.
+- C. `.update_rho(truth$c, post$sigma_c)` → median **0.659**. Confirms
+  rho update math + sigma_c posterior together are correct.
+- D. `.update_rho(post$c, truth$sigma_c)` → median **0.421**. **Bias
+  comes from posterior c-draws having lower lag-1 autocorrelation
+  than truth.**
+
+Mechanism: each FFBS draw c_post = E[c|y] + epsilon where epsilon is
+posterior noise with its own (smaller) autocorrelation. The lag-1
+autocorrelation of c_post equals true rho × Var(c_true) /
+(Var(c_true) + Var(epsilon)). With Var(epsilon) ≈ 0.7 × Var(c_true)
+this gives rho(c_post) ≈ 0.7 / 1.7 ≈ 0.41 — matching the observed
+bias.
+
+This is a known issue with conditional-on-c Gibbs updates for AR(1)
+hyperparameters in state-space models. **Standard fixes:**
+1. **Marginal MH update**: propose rho from N(current, prop_sd) and
+   accept/reject based on p(y|rho), integrating out c via the Kalman
+   filter. Loses Gibbs simplicity but gives correct rho posterior.
+2. **Joint c/rho update**: propose (rho, c) jointly via MH, using a
+   linearised approximation. Complex.
+3. **Diffuse prior on c_1 + longer chains**: doesn't solve the bias
+   (tested 2026-05-26; diffuse c_1 changes posterior median only
+   marginally).
+4. **Accept the bias** as a "centring effect" and report rho
+   posterior as "indicative" rather than exact.
+
+For the AU model production: option 4 may be defensible — the
+INTERPRETATION ("AU sectoral co-movement is transitory") is robust
+to rho being anywhere in (0.3, 0.9). For methodology rigor, option 1
+is the right answer; defer to a follow-up session.
+
+Build_mct_ssm currently uses diffuse c_1 (Sigma_1[1,1] = 100) per
+this investigation. The stationary-AR(1) variance form may also be
+restored later — choice doesn't change the rho bias.
+
 ### Step 7 (deprecated original text below — for reference only) — Main Gibbs loop
 
 Orchestrate the per-iteration sweep:
