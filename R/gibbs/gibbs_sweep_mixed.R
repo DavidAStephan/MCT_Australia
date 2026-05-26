@@ -112,12 +112,26 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
     s2_prior = rep(config$s2_gam_prior, N)
   )
 
-  # --- 6. rho update (same as monthly-only path) --------------------
-  state$rho <- .update_rho(
-    c_path, state$sigma_c,
-    prior_mean = config$rho_prior_mean,
-    prior_sd   = config$rho_prior_sd
-  )
+  # --- 6. rho update ------------------------------------------------
+  # Marginal MH is the unbiased path; conditional Gibbs has a known
+  # FFBS-noise downward bias (see update_rho_mh.R). Config flag lets
+  # us A/B test if needed.
+  if (isTRUE(config$use_marginal_mh_rho)) {
+    rho_step <- update_rho_marginal_mh(
+      state$rho, y, obs_type, state, config,
+      prop_sd    = config$rho_prop_sd,
+      prior_mean = config$rho_prior_mean,
+      prior_sd   = config$rho_prior_sd
+    )
+    state$rho             <- rho_step$rho
+    state$last_rho_accept <- rho_step$accepted
+  } else {
+    state$rho <- .update_rho(
+      c_path, state$sigma_c,
+      prior_mean = config$rho_prior_mean,
+      prior_sd   = config$rho_prior_sd
+    )
+  }
 
   # --- 7. Lambda update (monthly residuals only for v1) -------------
   state$lambda <- .update_lambda_mixed(

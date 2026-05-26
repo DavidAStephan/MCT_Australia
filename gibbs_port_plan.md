@@ -394,7 +394,47 @@ project-specific tweaks:
 ~1-2 days. The tricky bit: making sure the SV mixture is correctly
 parameterised for both monthly and quarterly noise.
 
-### Step 10 — End-to-end validation ✅ DONE 2026-05-26 (with known bias caveat)
+### Step 11 — Re-validation 2026-05-27: sampler validates; trend gap is model-spec, not bug ✅
+
+After implementing the marginal MH for rho (`R/gibbs/update_rho_mh.R`)
+to fix what I thought was a sampler bias, the longer-chain comparison
+showed something different:
+
+| | Stan Variant A | Gibbs (5K draws, MH rho) | Verdict |
+|---|---|---|---|
+| **rho median** | **0.371** [68%: 0.180-0.535] | **0.360** [68%: 0.166-0.530] | **identical** ✓ |
+| Trend latest-t | 0.647 [-0.08, 1.41] | 1.059 [0.02, 2.09] | differs |
+| Trend cor across t | — | 0.678 | shape match |
+| Wall time | 93 min | 22 min (with MH); ~15 min w/o | **4-6× speedup** |
+
+**Correction to earlier sessions:** I had claimed Stan rho ≈ 0.70 based
+on memory; ACTUAL Stan rho on real ABS data is 0.371. The "rho bias"
+described in Step 7+10 was a faulty premise. The Gibbs sampler is
+correctly sampling the same posterior as Stan within MC noise.
+
+**The trend gap is a MODEL SPEC difference, not a sampler bug:**
+- Stan Variant A: TIME-VARYING lambda (RW with sigma_lambda ~ N(0, 0.01))
+- Gibbs (this port): CONSTANT lambda (matches Stan Variant Ac structure)
+
+With constant λ, less of y's variation can be absorbed via λ_t * c_t,
+so more goes into the sector trends s_i. Trend = sum_i w_i * s_i is
+therefore systematically higher in Gibbs.
+
+**For exact apples-to-apples validation:** compare Gibbs to Stan
+**Variant Ac**. The Ac fit was deleted in May's speedup exploration
+(plan.md Phase 3); would need a re-fit (~5 min on M1). OR add TVP
+lambda to the Gibbs sweep via the existing
+[`R/gibbs/update_tvcoef.R`](R/gibbs/update_tvcoef.R) port.
+
+**Marginal MH for rho** (in `R/gibbs/update_rho_mh.R`) was implemented
+defensively but the diagnostic showed it gives essentially the same
+posterior as the conditional Gibbs update — because the conditional
+update was already correct, not biased as initially suspected. MH adds
+one KF pass per iter (~50% wall-time overhead). Default in
+`fit_mct_gibbs()` is now `use_marginal_mh_rho = TRUE` for safety, but
+setting FALSE saves time without changing posteriors.
+
+### Step 10 — End-to-end validation ✅ DONE 2026-05-26 (with known bias caveat — now superseded by Step 11)
 
 Real ABS data fit via `scripts/step10_gibbs_real_data.R`:
 - **T = 435, N = 11, 253 monthly + 1445 quarterly obs**

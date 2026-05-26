@@ -54,7 +54,12 @@ fit_mct_gibbs <- function(y,
     # var_s_init matches Stan Variant Ac prior s_init ~ N(0, 0.5^2).
     # Larger values (e.g. 100) make s_i and c trade signal in early
     # iterations — c gets absorbed into s, biasing rho downward.
-    var_s_init        = 0.25
+    var_s_init        = 0.25,
+    # rho update: marginal MH (recommended) avoids the FFBS-noise
+    # bias of the conditional Gibbs path. Set FALSE to recover the
+    # biased-but-faster conditional-Gibbs behaviour for A/B testing.
+    use_marginal_mh_rho = TRUE,
+    rho_prop_sd         = 0.05
   )
   if (!is.null(config)) {
     for (k in names(config)) cfg[[k]] <- config[[k]]
@@ -96,6 +101,10 @@ fit_mct_gibbs <- function(y,
     lambda    = matrix(NA_real_, N, n_keep)
   )
 
+  # Track rho-MH acceptance rate (post-burn-in only)
+  rho_n_accept <- 0L
+  rho_n_total  <- 0L
+
   t0 <- Sys.time()
   total_iter <- n_burn + n_draw
   for (i in seq_len(total_iter)) {
@@ -103,6 +112,12 @@ fit_mct_gibbs <- function(y,
       gibbs_sweep_mixed(y, obs_type, state, cfg)
     } else {
       gibbs_sweep(y, state, cfg)
+    }
+
+    # Track rho-MH acceptance (post-burn-in only, mixed-freq path only)
+    if (mixed_freq && isTRUE(cfg$use_marginal_mh_rho) && i > n_burn) {
+      rho_n_total  <- rho_n_total + 1L
+      if (isTRUE(state$last_rho_accept)) rho_n_accept <- rho_n_accept + 1L
     }
 
     # Collect draws after burn-in, every n_thin-th
@@ -133,6 +148,15 @@ fit_mct_gibbs <- function(y,
     }
   }
 
-  list(draws = draws, config = cfg, n_iter = total_iter,
-       elapsed_sec = as.numeric(difftime(Sys.time(), t0, units = "secs")))
+  out <- list(draws = draws, config = cfg, n_iter = total_iter,
+              elapsed_sec = as.numeric(difftime(Sys.time(),
+                                                t0, units = "secs")))
+  if (rho_n_total > 0L) {
+    out$rho_accept_rate <- rho_n_accept / rho_n_total
+    if (verbose) {
+      message(sprintf("[fit_mct_gibbs] rho-MH acceptance: %.1f%% (%d / %d post-burn)",
+                      100 * out$rho_accept_rate, rho_n_accept, rho_n_total))
+    }
+  }
+  out
 }

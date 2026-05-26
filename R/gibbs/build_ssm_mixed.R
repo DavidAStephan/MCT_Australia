@@ -104,11 +104,17 @@ build_mct_ssm_mixed <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   }
 
   # --- Initial state mean + covariance -------------------------------
-  # Diffuse priors for c lags and s lags (no t < 1 info); tight prior
-  # on s_{i,1} (matches Stan variant Ac s_init ~ N(0, 0.5^2)).
+  # c_1 uses the STATIONARY AR(1) variance Sigma_1[1,1] = sigma_c[1]^2 /
+  # (1 - rho^2) to match the Stan Variant A/Ac prior. Earlier we tried
+  # a diffuse Sigma_1[1,1] = 100 to avoid a self-fulfilling rho bias
+  # when c_1 was forced near 0, but the on-real-data Step 10 result
+  # showed both choices give similar (low) rho posteriors — and the
+  # Stan baseline that we want to match uses stationary.
+  # c_{t-1}, c_{t-2} lags don't have meaning at t=1: diffuse.
+  # s_{i,1} matches Stan prior s_init ~ N(0, 0.5^2); lags diffuse.
   mu_1 <- rep(0, D)
   Sigma_1 <- diag(D)
-  Sigma_1[1L, 1L] <- 100
+  Sigma_1[1L, 1L] <- sigma_c[1L]^2 / max(1 - rho^2, 1e-6)
   Sigma_1[2L, 2L] <- 100
   Sigma_1[3L, 3L] <- 100
   for (i in seq_len(N)) {
