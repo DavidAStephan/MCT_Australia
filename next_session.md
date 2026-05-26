@@ -5,6 +5,59 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
+## Session update (2026-05-27) — Step 11: Gibbs validated; "rho bias" was a faulty premise
+
+**Correction to previous sessions:** I had claimed Stan's rho on real
+ABS data was ~0.7, then spent time diagnosing/fixing a "rho bias" in
+the Gibbs sampler. **Stan's actual rho posterior on real data is
+0.371.** Gibbs gives 0.360 on the same data. They're statistically
+identical.
+
+Long-chain comparison (`scripts/step10b_gibbs_vs_stan_real.R`,
+2000 burn + 5000 draws, 22 min):
+
+| Quantity | Stan Variant A | Gibbs | Verdict |
+|---|---|---|---|
+| **rho median** | **0.371** [0.18, 0.54] | **0.360** [0.17, 0.53] | **identical** ✓ |
+| Trend latest-t | 0.647 | 1.059 | differs — **NOT a sampler bug** |
+| Trend cor across t | — | 0.678 | shape match |
+| Wall time | 93 min | 22 min (MH) / 15 min (cond) | 4-6× faster |
+
+**Trend gap is a model-spec difference**, not a sampler issue:
+- Stan Variant A: TIME-VARYING lambda (RW)
+- Gibbs: CONSTANT lambda (matches Stan Variant Ac)
+
+With constant λ, less variation absorbed via λ_t * c_t ⇒ more into
+sector trends ⇒ trend (sum w_i * s_i) is higher.
+
+**The marginal MH rho update was implemented** anyway
+([`R/gibbs/update_rho_mh.R`](R/gibbs/update_rho_mh.R)), default
+`use_marginal_mh_rho = TRUE` for safety. Adds ~50% wall-time overhead
+(one KF pass per iter). Set FALSE to skip — gives the same posterior.
+
+**Total Gibbs port state: 91 tests passing across `R/gibbs/`.**
+
+**Cleared next-session targets** (in order of value):
+
+1. **Refit Stan Variant Ac to get the apples-to-apples comparison.**
+   The Ac fit was deleted in the May speedup-exploration. With Ac
+   re-cached, the Stan-vs-Gibbs trend should match exactly (both use
+   constant lambda). ~5-10 min on M1 via the cached pipeline.
+
+2. **OR add TVP lambda to the Gibbs sweep** using
+   [`R/gibbs/update_tvcoef.R`](R/gibbs/update_tvcoef.R) which we
+   already ported but never wired in. Then Stan Variant A vs Gibbs
+   should match directly. Effort: ~half day.
+
+3. **Wire Gibbs into `_targets.R`** as an alternative pipeline target
+   (e.g. "fit_Ag"). Drop-in via the existing mct_gibbs_fit S3 wrapper.
+   Worth doing once #1 or #2 confirms full validation.
+
+4. **Stretch: Kim-Shephard SV update timing.** The Gibbs is already
+   18× faster than Stan even without optimisation. Profiling could
+   identify whether the FFBS or SV updates dominate, and there's
+   room for further speed gains.
+
 ## Session update (2026-05-26 late) — Gibbs port done end-to-end on real data; 18× speedup with caveat
 
 **The Gibbs port now works end-to-end on production-scale real ABS data.**
