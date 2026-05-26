@@ -335,7 +335,48 @@ Also generate the `trend[T]`, `common_share[T]`, `log_lik[n_obs]` as a
 post-processing step on the saved draws, matching the Stan generated
 quantities exactly. ~0.5 days.
 
-### Step 9 — Adaptation for Variant A (AR(1)) + mixed-frequency obs
+### Step 9a — Mixed-frequency observations ✅ DONE 2026-05-26
+
+Implemented across two new files:
+
+- [`R/gibbs/build_ssm_mixed.R`](R/gibbs/build_ssm_mixed.R) —
+  `build_mct_ssm_mixed()` constructs an augmented 3(N+1)-dim state
+  SSM (state = `(c_t, c_{t-1}, c_{t-2}, s_{1,t..t-2}, ..., s_{N,t..t-2})`)
+  that handles the quarterly-average observation
+  `y^Q_{i,t} = (y_{i,t-2} + y_{i,t-1} + y_{i,t})/3` as a single
+  linear obs equation.
+- [`R/gibbs/gibbs_sweep_mixed.R`](R/gibbs/gibbs_sweep_mixed.R) — one
+  full Gibbs pass using the augmented SSM. Extracts `c` and `s_i`
+  from positions [1, ·] and [3i+1, ·] of the smoothed augmented state.
+
+**Mixed-freq simplifications for v1** (refine later if needed):
+
+- Measurement-noise residuals `eps[i,t]` only computed at MONTHLY
+  observation times. At quarterly times, only the 3-month-average
+  eps is observable (not the individual months), so per-month
+  `update_vol` calls are NA-filled at quarterly positions. update_vol
+  propagates the RW state without an update there.
+- Loadings `lambda` updated using monthly residuals only. Quarterly
+  contributions to the lambda regression would require summing 3
+  lags of c — punted to a follow-up.
+
+`fit_mct_gibbs()` now dispatches:
+- `obs_type = NULL` → Step 7 monthly-only path (N+1-dim state)
+- `obs_type` matrix → Step 9a mixed-freq path (3(N+1)-dim state)
+
+Tests at
+[`tests/testthat/gibbs/test-fit-mct-gibbs-mixed.R`](tests/testthat/gibbs/test-fit-mct-gibbs-mixed.R)
+(4 new, 85 total):
+- End-to-end run with all-monthly obs_type
+- Mixed-freq c-extraction correlates >0.85 with monthly-only c
+  posterior medians (sanity check: augmented path gives the same
+  posterior when fed the same data, just slower)
+- Handles truly mixed-freq simulated data (24 monthly + ~32 quarterly
+  obs of 120 periods) without crash
+- Recovers c signal (cor > 0.3) on mixed-freq sim — loose threshold
+  because only 20% of periods are monthly
+
+### Step 9 (original text, kept for reference) — Adaptation for Variant A (AR(1)) + mixed-frequency obs
 
 NY Fed has Variant B (RW common) and monthly obs only. Two
 project-specific tweaks:

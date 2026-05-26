@@ -22,6 +22,7 @@
 #' @param verbose   If TRUE, print progress every 100 iters.
 #' @return List with `draws` (collected samples) and `config`.
 fit_mct_gibbs <- function(y,
+                          obs_type = NULL,
                           ref = 1L,
                           n_burn = 1000L,
                           n_draw = 2000L,
@@ -31,6 +32,15 @@ fit_mct_gibbs <- function(y,
                           verbose = TRUE) {
   T_ <- nrow(y)
   N  <- ncol(y)
+
+  # Dispatch: if obs_type is given (Step 9 mixed-freq path), use
+  # gibbs_sweep_mixed + augmented SSM. Otherwise (Step 7 monthly-only
+  # path), use the simpler gibbs_sweep + N+1-dim SSM.
+  mixed_freq <- !is.null(obs_type)
+  if (mixed_freq) {
+    stopifnot(all(dim(obs_type) == c(T_, N)),
+              all(obs_type %in% c(0L, 1L, 2L)))
+  }
 
   # Default config — closely mirrors plan.md/Stan Variant Ac priors
   cfg <- list(
@@ -89,7 +99,11 @@ fit_mct_gibbs <- function(y,
   t0 <- Sys.time()
   total_iter <- n_burn + n_draw
   for (i in seq_len(total_iter)) {
-    state <- gibbs_sweep(y, state, cfg)
+    state <- if (mixed_freq) {
+      gibbs_sweep_mixed(y, obs_type, state, cfg)
+    } else {
+      gibbs_sweep(y, state, cfg)
+    }
 
     # Collect draws after burn-in, every n_thin-th
     if (i > n_burn) {
