@@ -394,7 +394,52 @@ project-specific tweaks:
 ~1-2 days. The tricky bit: making sure the SV mixture is correctly
 parameterised for both monthly and quarterly noise.
 
-### Step 10 — End-to-end validation
+### Step 10 — End-to-end validation ✅ DONE 2026-05-26 (with known bias caveat)
+
+Real ABS data fit via `scripts/step10_gibbs_real_data.R`:
+- **T = 435, N = 11, 253 monthly + 1445 quarterly obs**
+- 1000 burn + 2000 draws single chain
+- **Wall time: 5.2 min** (0.10 sec/iter)
+- vs Stan Variant A baseline (cached `fit_A.rds`): **93 min** for
+  4 chains × 1500+1500
+
+**Headline: ~18× speedup vs Stan, matching the Sørensen 2026 paper's
+prediction for NUTS-Kalman on similar dimensionality.**
+
+| Quantity | Stan A | Gibbs | Notes |
+|----------|--------|-------|-------|
+| Wall time | 93 min | **5.2 min** | **18× faster** ✓ |
+| rho posterior median | ~0.70 | **0.21** [-0.12, 0.51] | Bias confirmed |
+| Trend latest-t median | 0.647 | 1.048 | Gibbs higher |
+| Trend cor(Stan, Gibbs) across t | — | 0.685 | Shape similar |
+| Trend MAE Stan vs Gibbs | — | 0.486 | Level differs |
+| Lambda medians | various | 0.91–1.03 | Pattern matches |
+
+**Bias mechanism on real data confirms the diagnostic finding from
+Step 7.** With rho biased low (0.21 vs Stan's 0.70), the common
+factor explains less variance ⇒ sector trends absorb more variance
+⇒ Variant A trend (= sum w_i * s_i) is HIGHER than Stan's trend.
+
+The trend SHAPE correlates 0.69 with Stan, but the LEVEL differs by
+~0.5 percentage points (a meaningful fraction of the trend's own
+~3% range).
+
+**Current production recommendation:**
+- **Keep Stan Variant A as headline**; cron + dashboard unchanged.
+- **Gibbs becomes a "fast prototype" estimator** — useful for
+  sensitivity studies, scenario fits, alternative-spec exploration
+  where iteration speed matters more than reproducing exact Stan
+  posteriors.
+- **Fix the rho bias** before promoting Gibbs to production. Fix
+  path: marginal MH rho update (mitigation #1 in the Step 7 update
+  block above). Estimated effort: 1-2 days.
+
+This closes the planned Gibbs port work. The deferred items
+(marginal-MH rho, MA(3) errors, outlier scale mixture, exact
+quarterly log_lik, cross-sector dependence) remain in the parking
+lot until production needs justify them.
+
+### Step 10 (original text, kept for reference) — End-to-end validation
 
 - Sim recovery: fit ported Gibbs on simulated data, confirm posterior
   medians fall in 95% intervals of the truth at most t.
