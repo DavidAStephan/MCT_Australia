@@ -68,7 +68,14 @@ fit_mct_gibbs <- function(y,
     rho_prop_sd         = 0.05,
     # MA(q) path config (used only when q_MA > 0)
     q_MA                = q_MA,
-    theta_prec_prior    = 0.1
+    theta_prec_prior    = 0.1,
+    # Outlier scale-mixture config (used only when use_outliers = TRUE
+    # AND obs_type is provided). NY Fed defaults: 40-point scale grid
+    # with vals[1] = 1 (normal) and remainder from 2 to 10.
+    use_outliers        = FALSE,
+    s_vals              = c(1, seq(2, 10, length.out = 39)),
+    ps_a_prior          = 0.975 * 100,   # ps_mean = 0.975, n_obs = 100
+    ps_b_prior          = 0.025 * 100
   )
   if (!is.null(config)) {
     for (k in names(config)) cfg[[k]] <- config[[k]]
@@ -91,10 +98,20 @@ fit_mct_gibbs <- function(y,
       lambda    = rep(1, N)
     )
     if (ma_path) state$theta <- matrix(0, N, q_MA)
+    if (isTRUE(cfg$use_outliers)) {
+      state$s_outlier <- matrix(1, T_, N)              # init all normal
+      state$ps        <- rep(cfg$ps_a_prior /
+                             (cfg$ps_a_prior + cfg$ps_b_prior), N)
+    }
   } else {
     state <- init
     if (ma_path && is.null(state$theta)) {
       state$theta <- matrix(0, N, q_MA)
+    }
+    if (isTRUE(cfg$use_outliers) && is.null(state$s_outlier)) {
+      state$s_outlier <- matrix(1, T_, N)
+      state$ps        <- rep(cfg$ps_a_prior /
+                             (cfg$ps_a_prior + cfg$ps_b_prior), N)
     }
   }
   state$lambda[ref] <- 1  # enforce identification
@@ -115,6 +132,10 @@ fit_mct_gibbs <- function(y,
   )
   if (ma_path) {
     draws$theta <- array(NA_real_, c(N, q_MA, n_keep))
+  }
+  if (isTRUE(cfg$use_outliers)) {
+    draws$s_outlier <- array(NA_real_, c(T_, N, n_keep))
+    draws$ps        <- matrix(NA_real_, N, n_keep)
   }
 
   # Track rho-MH acceptance rate (post-burn-in only)
@@ -154,6 +175,10 @@ fit_mct_gibbs <- function(y,
         draws$rho[k]          <- state$rho
         draws$lambda[, k]     <- state$lambda
         if (ma_path) draws$theta[, , k] <- state$theta
+        if (isTRUE(cfg$use_outliers)) {
+          draws$s_outlier[, , k] <- state$s_outlier
+          draws$ps[, k]          <- state$ps
+        }
       }
     }
 

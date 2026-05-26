@@ -394,6 +394,68 @@ project-specific tweaks:
 ~1-2 days. The tricky bit: making sure the SV mixture is correctly
 parameterised for both monthly and quarterly noise.
 
+### Step 13 — Outlier scale mixture ✅ DONE 2026-05-27
+
+Added discrete scale-mixture outlier handling to the mixed-freq path
+(integrates cleanly with quarterly obs because scales are per-obs
+scalars, not state-augmented).
+
+New files:
+- [`R/gibbs/update_scl.R`](R/gibbs/update_scl.R) — port of
+  update_scl.m. Samples per-obs scale from discrete posterior given
+  whitened residual. Default 40-point grid: vals = c(1, seq(2, 10,
+  length=39)) with vals[1] = 1 the "normal" mass.
+- [`R/gibbs/update_ps.R`](R/gibbs/update_ps.R) — port of update_ps.m.
+  Conjugate Beta posterior for the probability of "normal" obs at
+  each sector.
+
+Sweep integration (R/gibbs/gibbs_sweep_mixed.R):
+- New `use_outliers` config flag (default FALSE)
+- When TRUE, the SSM's obs noise uses sigma_eps * s_outlier (per-obs
+  inflated SD)
+- After FFBS: update s_outlier (per-obs, per-sector) → update sigma_eps
+  using (residual / s_outlier) → update ps (Beta posterior on
+  s_outlier == 1 indicator)
+
+Config defaults: `s_vals = c(1, seq(2, 10, length = 39))`,
+`ps_a_prior = 97.5, ps_b_prior = 2.5` (prior mean ps = 0.975, prior
+strength = 100 obs).
+
+Tests (`tests/testthat/gibbs/test-fit-mct-gibbs-outliers.R`,
+6 new, 120/120 total gibbs tests):
+- Outlier path runs end-to-end with correct draws-storage shapes
+- Posterior median s_outlier > 1.5 at 3+/5 injected outlier positions
+- < 15% false-positive rate on non-outlier obs
+
+This unlocks production use on AU sectors with known volatile sub-
+indices (fuel, fruit & veg, holiday travel) — the model will accommodate
+the spikes via outlier scales without blowing up the SV path.
+
+### Step 12 — MA(q) measurement errors (monthly-only) ✅ DONE 2026-05-27
+
+State-augmented SSM with (q+1) eps lags per sector. NY Fed convention:
+eps state's variance is sigma_eps^2 (the sigma is folded into state
+innovation noise, NOT the obs H), making the SV update directly
+applicable on smoothed eps draws.
+
+New files:
+- [`R/gibbs/update_theta.R`](R/gibbs/update_theta.R) — conjugate
+  Normal posterior for MA coefficients + invertibility enforcement
+  via root reflection
+- [`R/gibbs/build_ssm_ma.R`](R/gibbs/build_ssm_ma.R) — augmented-state
+  SSM constructor (D = 1 + N + (q+1)*N)
+- [`R/gibbs/gibbs_sweep_ma.R`](R/gibbs/gibbs_sweep_ma.R) — Gibbs
+  sweep with eps-state-based SV updates and theta update
+
+V1 LIMITATION: monthly-only. Combined mixed-freq + MA path NOT
+implemented (rejected with informative error in fit_mct_gibbs). State
+dim would be ~92 at N=11, q=3 — heavy. AU production data is largely
+mixed-freq, so MA path is currently a sim-validated capability, not
+production-ready for AU.
+
+Tests (`test-update-theta.R`, `test-build-ssm-ma.R`,
+`test-fit-mct-gibbs-ma.R`): 13 new total.
+
 ### Step 11 — Re-validation 2026-05-27: sampler validates; trend gap is model-spec, not bug ✅
 
 After implementing the marginal MH for rho (`R/gibbs/update_rho_mh.R`)

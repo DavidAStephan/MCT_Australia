@@ -51,12 +51,22 @@
 gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   T_ <- config$T_
   N  <- config$N
+  use_outliers <- isTRUE(config$use_outliers)
 
   # --- 1. Build augmented-state SSM ---------------------------------
+  # When outliers enabled, the EFFECTIVE measurement-noise SD is
+  # sigma_eps * s_outlier (per-obs scale inflation). This is what
+  # the KF sees as obs noise.
+  effective_sigma_eps <- if (use_outliers) {
+    state$sigma_eps * state$s_outlier
+  } else {
+    state$sigma_eps
+  }
+
   ssm <- build_mct_ssm_mixed(
     rho = state$rho, lambda = state$lambda,
     sigma_c = state$sigma_c, sigma_s = state$sigma_s,
-    sigma_eps = state$sigma_eps,
+    sigma_eps = effective_sigma_eps,
     obs_type = obs_type, T_ = T_, N = N,
     var_s_init = config$var_s_init
   )
@@ -91,9 +101,40 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   lam_mat <- matrix(state$lambda, T_, N, byrow = TRUE)
   eps_mat <- y - lam_mat * c_mat - s_path
   eps_mat[obs_type != 1L] <- NA
-  for (i in seq_len(N)) {
-    state$sigma_eps[, i] <- update_vol(eps_mat[, i], state$sigma_eps[, i],
-                                       state$gamma_eps[i])
+
+  if (use_outliers) {
+    # Step A: update per-obs scale s_outlier given residuals + current
+    # sigma_eps. Whitened residual w_t = residual_t / sigma_eps_t should
+    # be ~ N(0, s_outlier_t^2).
+    for (i in seq_len(N)) {
+      probs_i <- c(state$ps[i],
+                   rep((1 - state$ps[i]) /
+                       (length(config$s_vals) - 1L),
+                       length(config$s_vals) - 1L))
+      w_res_i <- eps_mat[, i] / state$sigma_eps[, i]
+      state$s_outlier[, i] <- update_scl(w_res_i, config$s_vals, probs_i)
+    }
+
+    # Step B: update sigma_eps using residuals DIVIDED BY scale
+    # (so eps_t / s_t = sigma_t * unit_eps_t matches update_vol's model).
+    for (i in seq_len(N)) {
+      state$sigma_eps[, i] <- update_vol(
+        eps_mat[, i] / state$s_outlier[, i],
+        state$sigma_eps[, i], state$gamma_eps[i]
+      )
+    }
+
+    # Step C: update ps (probability of normal obs) given current
+    # s_outlier indicators. Use only monthly-obs positions for the
+    # Bernoulli count.
+    indicator <- (state$s_outlier == config$s_vals[1L]) & (obs_type == 1L)
+    # Restrict to rows with any monthly obs (cleaner counts)
+    state$ps <- update_ps(indicator, config$ps_a_prior, config$ps_b_prior)
+  } else {
+    for (i in seq_len(N)) {
+      state$sigma_eps[, i] <- update_vol(eps_mat[, i], state$sigma_eps[, i],
+                                         state$gamma_eps[i])
+    }
   }
 
   # --- 5. Gamma updates --------------------------------------------
