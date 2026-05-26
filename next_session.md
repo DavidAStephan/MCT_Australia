@@ -5,7 +5,33 @@ Hand-off note for the next working session. Pair with [`CLAUDE.md`](CLAUDE.md)
 findings), and the auto-memory at
 `~/.claude/projects/-Users-davidstephan-Documents-MCT-Australia-MCT-Australia/`.
 
-## Session update (2026-05-26) — Gibbs port Steps 1-6 done
+## Session update (2026-05-26 evening) — Gibbs port Step 7 done; end-to-end works
+
+`fit_mct_gibbs()` works end-to-end on simulated MCT Variant A data
+(54 passing tests). Three new files:
+
+- [`R/gibbs/build_ssm.R`](R/gibbs/build_ssm.R) — SSM constructor
+- [`R/gibbs/gibbs_sweep.R`](R/gibbs/gibbs_sweep.R) — one full Gibbs pass
+- [`R/gibbs/fit_mct_gibbs.R`](R/gibbs/fit_mct_gibbs.R) — main fit entry
+
+**Status:** the sampler runs and recovers signal but **mixes slowly**.
+With 500 burn + 1000 draws on T=200 N=5 sim, rho posterior median
+~0.4-0.5 vs truth 0.7 (the AR(1) common factor competes with RW
+sector trends for signal). Tests use loose "is the sampler working"
+thresholds; production fits will need longer chains AND/OR a reparam.
+See [`gibbs_port_plan.md`](gibbs_port_plan.md) Step 7 update for
+mitigations to try in Step 9.
+
+**Next session targets:**
+- Step 8: `mct_gibbs_fit` S3 class so it plugs into existing
+  downstream code (postprocess, dashboard, etc.) without changes
+- Step 9: mixed-frequency observation handling + try center-rotation
+  of sector trends to break the c-vs-s additive identification (or
+  longer chains, or smarter init) — fix the slow rho mixing
+- Step 10: end-to-end validation against the Stan Variant Ac fit on
+  real ABS data
+
+## Session update (2026-05-26 morning) — Gibbs port Steps 1-6 done
 
 Steps 1-6 of [`gibbs_port_plan.md`](gibbs_port_plan.md) ported and
 tested. R code at [`R/gibbs/`](R/gibbs/), tests at
