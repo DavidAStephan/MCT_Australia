@@ -224,7 +224,51 @@ pattern as the latent factor. ~1 day.
 
 Validation: drive with known true lambda paths and check recovery.
 
-### Step 7 — Main Gibbs loop (`estimate_MCT.m` → `R/fit_mct_gibbs.R`)
+### Step 7 — Main Gibbs loop ✅ DONE 2026-05-26 (v1, with known caveats)
+
+Implemented across three files:
+
+- [`R/gibbs/build_ssm.R`](R/gibbs/build_ssm.R) — `build_mct_ssm()`
+  constructs the (N+1)-dim joint state-space matrices given current
+  hyperparameter draws. Monthly-obs only for v1 (Step 9 adds quarterly).
+- [`R/gibbs/gibbs_sweep.R`](R/gibbs/gibbs_sweep.R) — one full pass:
+  1. Build SSM from current params
+  2. Joint (c, s) draw via `simulation_smoother`
+  3. SV updates for `sigma_c`, `sigma_s`, `sigma_eps` via `update_vol`
+  4. RW step sizes via `update_gam`
+  5. AR(1) coef `rho` via truncated-normal conjugate update
+  6. Constant loadings `lambda` via Gaussian conjugate update (with
+     `lambda[ref]` pinned to 1)
+- [`R/gibbs/fit_mct_gibbs.R`](R/gibbs/fit_mct_gibbs.R) — `fit_mct_gibbs()`
+  wraps n_burn + n_draw sweeps and collects posterior draws into a list
+  with `draws$c`, `$s`, `$sigma_c`, `$sigma_s`, `$sigma_eps`, `$rho`,
+  `$lambda`, etc. Returns `list(draws, config, n_iter, elapsed_sec)`.
+
+Tests at
+[`tests/testthat/gibbs/test-fit-mct-gibbs.R`](tests/testthat/gibbs/test-fit-mct-gibbs.R)
+(4 new, 54 total at this point):
+- End-to-end run produces correctly-shaped output
+- rho posterior is informative (sd < 0.25) and median in (0.3, 0.95)
+- non-reference loadings recover within 0.4 of truth on short chains
+- c-path posterior mean correlates >0.5 with truth
+
+**KNOWN ISSUE: slow mixing of rho vs sector RWs.** With 500 burn + 1000
+draws on T=200 N=5 sim data, `rho` posterior median can be 0.2-0.3
+below truth (0.7). Both share signal — c is AR(1), s_i is RW, and
+under finite mixing the chain can absorb common-factor signal into
+sector trends, biasing rho down. The tests above use LOOSE thresholds
+("sampler is finding signal" not "perfect recovery"); production fits
+will need longer chains AND/OR a reparameterisation.
+
+**Mitigations to try in Step 9:**
+- Longer chains (n_burn = 2000-5000, n_draw = 5000+)
+- Center-rotate s_i each iteration so its mean across sectors = 0
+  (breaks the additive identification between c and s)
+- Use the NY Fed's centred parameterisation rather than non-centred
+- Initialise sigma_c larger than sigma_s (start in the AR(1)-dominant
+  regime)
+
+### Step 7 (deprecated original text below — for reference only) — Main Gibbs loop
 
 Orchestrate the per-iteration sweep:
 1. Update latent factor c (sim_smoother)
