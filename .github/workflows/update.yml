@@ -103,12 +103,12 @@ jobs:
         shell: bash
         run: |
           mkdir -p outputs/draws
-          if [[ -f outputs/draws/fit_B.rds ]]; then
+          if [[ -f outputs/draws/fit_B.rds && -f outputs/draws/stan_data.rds ]]; then
             cp outputs/draws/fit_B.rds      outputs/draws/fit_B_prior.rds
             cp outputs/draws/stan_data.rds  outputs/draws/stan_data_prior.rds
             echo "Rotated fit_B.rds -> fit_B_prior.rds"
           else
-            echo "No previous fit_B.rds — revisions panel will be empty this run."
+            echo "No previous fit_B.rds / stan_data.rds — revisions panel will be empty this run."
           fi
 
       # ----------------------------------------------------------------- Build

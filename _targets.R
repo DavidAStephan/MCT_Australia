@@ -46,6 +46,17 @@ list(
   tar_target(stan_data,
              build_stan_data_quarterly(infl_demeaned, weights = weights)),
 
+  # Persist stan_data to outputs/draws/ as a side-effect so the cron's
+  # "rotate prior vintage" step can pick it up alongside fit_B.rds.
+  tar_target(
+    stan_data_file, {
+      path <- "outputs/draws/stan_data.rds"
+      saveRDS(stan_data, path)
+      normalizePath(path)
+    },
+    format = "file"
+  ),
+
   # -------------------- Variant B fit (Gibbs, quarterly clock) --------
   # File-target — value is the absolute path string, not the loaded object.
   # On cache miss the command fits-and-saves; on cache hit just returns
@@ -106,7 +117,7 @@ list(
     dashboard, {
       # Touch every upstream target so it becomes a dependency.
       .deps <- list(
-        stan_data, weights, infl_demeaned,
+        stan_data, stan_data_file, weights, infl_demeaned,
         headline_yoy, trimmed_mean_yoy,
         fit_B, fit_B_wrap,
         trend_B, common_share_B, sector_contribs_B, loo_B
