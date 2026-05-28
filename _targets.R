@@ -98,5 +98,22 @@ list(
   }),
 
   # -------------------- Dashboard --------------------
-  tar_quarto(dashboard, path = "dashboard", working_directory = "dashboard")
+  # Manual target (instead of tar_quarto) so we can explicitly declare
+  # the upstream dependencies. tar_quarto()'s static dependency scan
+  # missed our multi-line `tar_load(c(...))` block on a clean runner,
+  # dispatching the render before fit_B/trend_B/etc. existed.
+  tar_target(
+    dashboard, {
+      # Touch every upstream target so it becomes a dependency.
+      .deps <- list(
+        stan_data, weights, infl_demeaned,
+        headline_yoy, trimmed_mean_yoy,
+        fit_B, fit_B_wrap,
+        trend_B, common_share_B, sector_contribs_B, loo_B
+      )
+      quarto::quarto_render("dashboard", as_job = FALSE, quiet = FALSE)
+      normalizePath("dashboard/_site/index.html")
+    },
+    format = "file"
+  )
 )
