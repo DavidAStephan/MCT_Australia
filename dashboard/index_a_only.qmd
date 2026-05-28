@@ -53,10 +53,12 @@ latest_cs_ci   <- c(tail(common_share_B$lower, 1),
 **`r sprintf("%.2f%%", latest_trend)`** per year &nbsp;·&nbsp;
 68% credible interval `r sprintf("%.2f–%.2f%%", latest_trend_ci[1], latest_trend_ci[2])`
 
-A model-based measure of underlying Australian CPI inflation: the
-broad-based, persistent component of the rate of price change, stripped
-of transitory shocks and sector-specific noise. Re-estimated each
-quarter from 33 seasonally-adjusted ABS CPI sub-group series.
+A model-based measure of underlying Australian CPI inflation, applying
+the [NY Fed Multivariate Core Trend](https://www.newyorkfed.org/research/policy/mct)
+methodology to 33 seasonally-adjusted ABS CPI sub-group series.
+Estimates the broad-based, persistent component of the rate of price
+change, stripped of transitory shocks and sector-specific noise.
+Re-estimated each quarter.
 :::
 
 ## Trend inflation
@@ -229,10 +231,18 @@ random walks. Trend is the weighted aggregate
 $\tau_t = \sum_i w_i\big(\lambda_i c_t + s_{i,t}\big)$ with weights from
 the ABS 2025 Weighting Pattern (sub-group level, sums to 1).
 
-Estimated by Gibbs sampling on the inflation-targeting-era sample
-(`r format(min(stan_data$dates), "%Y-Q%q")` to
-`r format(max(stan_data$dates), "%Y-Q%q")`, T=`r stan_data$T` quarters,
-N=33 sub-groups).
+The model specification follows the [NY Fed Multivariate Core Trend
+(MCT)](https://www.newyorkfed.org/research/policy/mct) — see Almuzara
+and Sbordone, "[Inflation Persistence: How Much Is There and Where Is
+It Coming From?](https://libertystreeteconomics.newyorkfed.org/2022/04/inflation-persistence-how-much-is-there-and-where-is-it-coming-from/)",
+Liberty Street Economics, April 2022. This dashboard applies that
+methodology to Australian CPI data: 33 ABS sub-groups (seasonally
+adjusted) at quarterly frequency, with an MA(1) sector-noise component
+and a scale-mixture outlier mechanism. Estimated by Gibbs sampling
+(a custom R port of the NY Fed MATLAB sampler) on the
+inflation-targeting-era sample (`r format(min(stan_data$dates), "%Y-Q%q")`
+to `r format(max(stan_data$dates), "%Y-Q%q")`,
+T = `r stan_data$T` quarters, N = 33 sub-groups).
 
 ---
 
