@@ -37,7 +37,10 @@
   lambda
 }
 
-#' One Gibbs sweep for the mixed-frequency MCT Variant A model.
+#' One Gibbs sweep for the mixed-frequency MCT model.
+#'
+#' Supports Variant A (AR(1) common factor — default) and Variant B
+#' (RW common factor) via `config$variant`.
 #'
 #' @param y         T x N matrix; obs values where present, NA where
 #'                  missing. Quarterly values appear at the last month
@@ -45,13 +48,15 @@
 #' @param obs_type  T x N integer matrix; 0 = missing, 1 = monthly,
 #'                  2 = quarterly average (requires t >= 3).
 #' @param state     Current state list (same shape as gibbs_sweep).
-#' @param config    Config list (same shape as gibbs_sweep, plus
-#'                  no new entries).
+#' @param config    Config list (same shape as gibbs_sweep). Pass
+#'                  `variant = "B"` to switch to the RW common-trend
+#'                  model; default is "A".
 #' @return Updated state list.
 gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   T_ <- config$T_
   N  <- config$N
   use_outliers <- isTRUE(config$use_outliers)
+  variant      <- if (is.null(config$variant)) "A" else config$variant
 
   # --- 1. Build augmented-state SSM ---------------------------------
   # When outliers enabled, the EFFECTIVE measurement-noise SD is
@@ -68,7 +73,8 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
     sigma_c = state$sigma_c, sigma_s = state$sigma_s,
     sigma_eps = effective_sigma_eps,
     obs_type = obs_type, T_ = T_, N = N,
-    var_s_init = config$var_s_init
+    var_s_init = config$var_s_init,
+    variant = variant
   )
 
   # --- 2. Joint draw of augmented state via FFBS --------------------
@@ -83,8 +89,25 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   s_path <- t(states[s_pos, , drop = FALSE])  # T_ x N
 
   # --- 4. SV updates ------------------------------------------------
-  nu_c <- c_path[-1L] - state$rho * c_path[-T_]
-  nu_c_full <- c(c_path[1L] * sqrt(max(1 - state$rho^2, 1e-6)), nu_c)
+  # Common-factor innovation residuals:
+  #   Variant A: c_t - rho * c_{t-1}, with c_1 scaled by sqrt(1 - rho^2)
+  #              (matches the stationary AR(1) prior on c_1).
+  #   Variant B: c_t - c_{t-1} (RW innovation). c_1 has a diffuse prior
+  #              (Sigma_1[1,1] = 4), so its innovation isn't tied to
+  #              sigma_c[1] — use sigma_c[1]'s prior draw uninformed by
+  #              c_1: pass c_1 itself as the "residual" with the diffuse
+  #              prior scaling already absorbed (this just contributes a
+  #              constant to the SV update at t=1, which is fine).
+  rho_path <- if (variant == "B") 1 else state$rho
+  nu_c <- c_path[-1L] - rho_path * c_path[-T_]
+  nu_c_full <- if (variant == "B") {
+    # c_1 has a diffuse prior (Sigma_1[1,1] = 4) — it carries no info
+    # about sigma_c[1]. Pass NA so update_vol's missing-data fallback
+    # leaves sigma_c[1] pulled toward its SV prior.
+    c(NA_real_, nu_c)
+  } else {
+    c(c_path[1L] * sqrt(max(1 - rho_path^2, 1e-6)), nu_c)
+  }
   state$sigma_c <- update_vol(nu_c_full, state$sigma_c, state$gamma_c)
 
   nu_s <- rbind(s_path[1L, ],
@@ -103,16 +126,26 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   eps_mat[obs_type != 1L] <- NA
 
   if (use_outliers) {
-    # Step A: update per-obs scale s_outlier given residuals + current
-    # sigma_eps. Whitened residual w_t = residual_t / sigma_eps_t should
-    # be ~ N(0, s_outlier_t^2).
+    # v1 design: only monthly obs participate in the scale mixture.
+    # Quarterly obs and missing cells get s_outlier = 1 (no inflation)
+    # so the SSM quarterly noise variance stays clean and the ps
+    # Bernoulli count only sees the cells that actually evaluated the
+    # update. Extending the mixture to quarterly obs requires a
+    # 3-lag-aware update_scl variant and is deferred.
+
+    # Step A: update per-obs scale s_outlier given monthly residuals +
+    # current sigma_eps. Quarterly + missing cells: pin s_outlier = 1.
+    state$s_outlier[obs_type != 1L] <- 1
     for (i in seq_len(N)) {
+      mask_m <- (obs_type[, i] == 1L)
+      if (!any(mask_m)) next
       probs_i <- c(state$ps[i],
                    rep((1 - state$ps[i]) /
                        (length(config$s_vals) - 1L),
                        length(config$s_vals) - 1L))
-      w_res_i <- eps_mat[, i] / state$sigma_eps[, i]
-      state$s_outlier[, i] <- update_scl(w_res_i, config$s_vals, probs_i)
+      w_res_i <- eps_mat[mask_m, i] / state$sigma_eps[mask_m, i]
+      state$s_outlier[mask_m, i] <-
+        update_scl(w_res_i, config$s_vals, probs_i)
     }
 
     # Step B: update sigma_eps using residuals DIVIDED BY scale
@@ -124,11 +157,12 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
       )
     }
 
-    # Step C: update ps (probability of normal obs) given current
-    # s_outlier indicators. Use only monthly-obs positions for the
-    # Bernoulli count.
-    indicator <- (state$s_outlier == config$s_vals[1L]) & (obs_type == 1L)
-    # Restrict to rows with any monthly obs (cleaner counts)
+    # Step C: update ps via Beta-Bernoulli — only over monthly obs.
+    # Set quarterly + missing cells to NA so update_ps's na.rm drops
+    # them from the count.
+    indicator <- matrix(NA, T_, N)
+    mask_m <- (obs_type == 1L)
+    indicator[mask_m] <- (state$s_outlier[mask_m] == config$s_vals[1L])
     state$ps <- update_ps(indicator, config$ps_a_prior, config$ps_b_prior)
   } else {
     for (i in seq_len(N)) {
@@ -154,10 +188,13 @@ gibbs_sweep_mixed <- function(y, obs_type, state, config) {
   )
 
   # --- 6. rho update ------------------------------------------------
-  # Marginal MH is the unbiased path; conditional Gibbs has a known
-  # FFBS-noise downward bias (see update_rho_mh.R). Config flag lets
-  # us A/B test if needed.
-  if (isTRUE(config$use_marginal_mh_rho)) {
+  # Variant A: update rho via marginal MH (unbiased) or conditional
+  #   Gibbs (faster but FFBS-noise biased — see update_rho_mh.R).
+  # Variant B: no rho update — the common-factor transition is fixed
+  #   at 1 (RW). Leave state$rho at its sentinel value of 1.
+  if (variant == "B") {
+    state$rho <- 1
+  } else if (isTRUE(config$use_marginal_mh_rho)) {
     rho_step <- update_rho_marginal_mh(
       state$rho, y, obs_type, state, config,
       prop_sd    = config$rho_prop_sd,

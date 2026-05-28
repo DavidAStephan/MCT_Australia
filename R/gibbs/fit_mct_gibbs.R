@@ -51,6 +51,9 @@ fit_mct_gibbs <- function(y,
   # Default config — closely mirrors plan.md/Stan Variant Ac priors
   cfg <- list(
     T_ = T_, N = N, ref = ref,
+    # Model variant — "A" (AR(1) common factor; default for back-compat)
+    # or "B" (RW common factor / Stock-Watson common trend).
+    variant           = "A",
     nu_gam_prior      = 60,
     s2_gam_prior      = 1 / (60 * 12),
     rho_prior_mean    = 0.5,
@@ -82,8 +85,8 @@ fit_mct_gibbs <- function(y,
   }
 
   # Sensible initial state. Sigmas start at 0.5 (close to typical SV
-  # scale for demeaned monthly inflation); gammas at 0.05; rho at 0.5;
-  # lambda at 1.
+  # scale for demeaned monthly inflation); gammas at 0.05; lambda at 1.
+  # rho initialised at 0.5 for A; at 1 (sentinel value) for B.
   if (is.null(init)) {
     state <- list(
       c         = rep(0, T_),
@@ -94,7 +97,7 @@ fit_mct_gibbs <- function(y,
       gamma_c   = 0.05,
       gamma_s   = rep(0.05, N),
       gamma_eps = rep(0.05, N),
-      rho       = 0.5,
+      rho       = if (cfg$variant == "B") 1 else 0.5,
       lambda    = rep(1, N)
     )
     if (ma_path) state$theta <- matrix(0, N, q_MA)

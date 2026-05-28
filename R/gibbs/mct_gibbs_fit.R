@@ -83,11 +83,26 @@ mct_gibbs_fit <- function(gibbs_output, stan_data) {
   n_keep <- ncol(draws$c)
   w  <- stan_data$w
 
-  # trend[T_, n_keep] = sum_i w_i * s[t, i]
-  # We have draws$s as (T_, N, n_keep) — collapse the N dim with w.
+  # trend[T_, n_keep]:
+  #   Variant B (RW common trend — production model):
+  #     trend = sum_i w_i * (lambda_i * c_t + s_{i,t})
+  #           = (sum_i w_i * lambda_i) * c_t + sum_i w_i * s_{i,t}
+  #     The common-factor c_t is part of the trend (Stock-Watson common
+  #     drift), so we MUST include it.
+  #   Variant A (AR(1) cycle):
+  #     c_t is a transitory cycle; trend = sum_i w_i * s_{i,t} only.
+  # We detect Variant B by all(rho == 1) — the gibbs_sweep pins rho at
+  # 1 throughout for B.
+  variant_B <- all(draws$rho == 1)
   trend <- matrix(NA_real_, T_, n_keep)
   for (k in seq_len(n_keep)) {
-    trend[, k] <- as.numeric(draws$s[, , k] %*% w)
+    sec <- as.numeric(draws$s[, , k] %*% w)
+    if (variant_B) {
+      wlam <- sum(w * draws$lambda[, k])           # scalar (lambda const)
+      trend[, k] <- wlam * draws$c[, k] + sec
+    } else {
+      trend[, k] <- sec
+    }
   }
 
   # common_share[t, k]:
@@ -103,22 +118,66 @@ mct_gibbs_fit <- function(gibbs_output, stan_data) {
     common_share[, k] <- com_var / (com_var + sec_var)
   }
 
-  # log_lik per observation per draw. Monthly only for v1.
-  # log_lik[k, draw] = normal_lpdf(y_m[k] | mu, sigma)
-  # where mu = lambda[i_m[k]] * c[t_m[k], draw] + s[t_m[k], i_m[k], draw]
-  # and sigma = sigma_eps[t_m[k], i_m[k], draw].
-  n_obs_m <- stan_data$n_obs_m
+  # log_lik per observation per draw.
+  #
+  # Monthly obs (i_m, t_m, y_m):
+  #   mu = lambda[i] * c[t] + s[t, i]
+  #   sigma = sigma_eps[t, i] * s_outlier[t, i]   (last factor = 1 if no outliers)
+  #
+  # Quarterly obs (i_q, t_q, y_q) — y is the avg of 3 monthly latents:
+  #   mu = lambda[i] * (c[t-2] + c[t-1] + c[t])/3 + (s[t-2,i] + s[t-1,i] + s[t,i])/3
+  #   var = (sigma_eff[t-2,i]^2 + sigma_eff[t-1,i]^2 + sigma_eff[t,i]^2) / 9
+  # matching build_mct_ssm_mixed's observation row for ot == 2.
+  use_outliers <- !is.null(draws$s_outlier)
+
+  n_obs_m <- if (!is.null(stan_data$n_obs_m)) stan_data$n_obs_m else 0L
   log_lik_m <- matrix(NA_real_, n_obs_m, n_keep)
-  for (k in seq_len(n_keep)) {
-    mu  <- draws$lambda[stan_data$i_m, k] *
-             draws$c[cbind(stan_data$t_m, k)] +
-             draws$s[cbind(stan_data$t_m, stan_data$i_m, k)]
-    sig <- draws$sigma_eps[cbind(stan_data$t_m, stan_data$i_m, k)]
-    log_lik_m[, k] <- dnorm(stan_data$y_m, mu, sig, log = TRUE)
+  if (n_obs_m > 0L) {
+    for (k in seq_len(n_keep)) {
+      mu  <- draws$lambda[stan_data$i_m, k] *
+               draws$c[cbind(stan_data$t_m, k)] +
+               draws$s[cbind(stan_data$t_m, stan_data$i_m, k)]
+      sig <- draws$sigma_eps[cbind(stan_data$t_m, stan_data$i_m, k)]
+      if (use_outliers) {
+        sig <- sig * draws$s_outlier[cbind(stan_data$t_m,
+                                           stan_data$i_m, k)]
+      }
+      log_lik_m[, k] <- dnorm(stan_data$y_m, mu, sig, log = TRUE)
+    }
   }
-  # Quarterly handling deferred to Step 9; emit a zero matrix for now
+
   n_obs_q <- if (!is.null(stan_data$n_obs_q)) stan_data$n_obs_q else 0L
-  log_lik_q <- matrix(0, n_obs_q, n_keep)
+  log_lik_q <- matrix(NA_real_, n_obs_q, n_keep)
+  if (n_obs_q > 0L) {
+    t_q  <- stan_data$t_q
+    i_q  <- stan_data$i_q
+    y_q  <- stan_data$y_q
+    # All quarterly obs are placed at t >= 3 (last month of quarter), but
+    # guard in case of bad inputs.
+    stopifnot(all(t_q >= 3L))
+    for (k in seq_len(n_keep)) {
+      c_t   <- draws$c[cbind(t_q,        k)]
+      c_tm1 <- draws$c[cbind(t_q - 1L,   k)]
+      c_tm2 <- draws$c[cbind(t_q - 2L,   k)]
+      s_t   <- draws$s[cbind(t_q,        i_q, k)]
+      s_tm1 <- draws$s[cbind(t_q - 1L,   i_q, k)]
+      s_tm2 <- draws$s[cbind(t_q - 2L,   i_q, k)]
+      lam_i <- draws$lambda[i_q, k]
+      mu <- lam_i * (c_t + c_tm1 + c_tm2) / 3 +
+              (s_t + s_tm1 + s_tm2) / 3
+
+      e_t   <- draws$sigma_eps[cbind(t_q,        i_q, k)]
+      e_tm1 <- draws$sigma_eps[cbind(t_q - 1L,   i_q, k)]
+      e_tm2 <- draws$sigma_eps[cbind(t_q - 2L,   i_q, k)]
+      if (use_outliers) {
+        e_t   <- e_t   * draws$s_outlier[cbind(t_q,      i_q, k)]
+        e_tm1 <- e_tm1 * draws$s_outlier[cbind(t_q - 1L, i_q, k)]
+        e_tm2 <- e_tm2 * draws$s_outlier[cbind(t_q - 2L, i_q, k)]
+      }
+      var_q <- (e_t^2 + e_tm1^2 + e_tm2^2) / 9
+      log_lik_q[, k] <- dnorm(y_q, mu, sqrt(var_q), log = TRUE)
+    }
+  }
   log_lik <- rbind(log_lik_m, log_lik_q)
 
   list(

@@ -14,9 +14,13 @@
 # Mixed-frequency observations not yet supported in this version; will
 # be added in Step 9. For v1 the model only accepts monthly obs.
 
-#' Build the SSM list for our Variant A MCT model.
+#' Build the SSM list for the MCT model (non-mixed-frequency path).
 #'
-#' @param rho       Scalar AR(1) coefficient on c.
+#' Supports Variant A (AR(1) common factor, default) and Variant B
+#' (RW common factor — the canonical Stock-Watson common trend).
+#'
+#' @param rho       Scalar AR(1) coefficient on c. Ignored when
+#'                  `variant = "B"` (transition coefficient on c is 1).
 #' @param lambda    Length-N vector of time-invariant loadings.
 #' @param sigma_c   Length-T vector of common-factor innovation SDs.
 #' @param sigma_s   T x N matrix of sector-trend innovation SDs.
@@ -24,10 +28,18 @@
 #' @param T_        Number of time periods.
 #' @param N         Number of sectors.
 #' @param var_s_init Prior variance on s_{i,1}. Default 100 (diffuse).
+#' @param variant   "A" (AR(1) common; default) or "B" (RW common trend).
+#'                  Affects F[1,1] and the c_1 prior variance: A uses
+#'                  diffuse Sigma_1[1,1] = 100; B uses the Stan-Variant-B
+#'                  prior c[1] ~ N(0, 2^2).
 #' @return List of SSM matrices ready to pass to simulate_ssm,
 #'   kalman_filter, fast_smoother, simulation_smoother.
 build_mct_ssm <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
-                          T_, N, var_s_init = 100) {
+                          T_, N, var_s_init = 100,
+                          variant = c("A", "B")) {
+  variant <- match.arg(variant)
+  rho_eff <- if (variant == "B") 1 else rho
+
   stopifnot(length(lambda) == N,
             length(sigma_c) == T_,
             all(dim(sigma_s) == c(T_, N)),
@@ -37,7 +49,8 @@ build_mct_ssm <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   K <- N + 1L          # disturbance dim
 
   # Transition F: block-diagonal-ish (rho for c, 1 for each s_i).
-  F_ <- diag(c(rho, rep(1, N)))
+  # Variant A: F[1,1] = rho; Variant B: F[1,1] = 1 (RW).
+  F_ <- diag(c(rho_eff, rep(1, N)))
 
   # Disturbance loadings G: identity (each disturbance hits its own state).
   G <- diag(M)
@@ -62,15 +75,15 @@ build_mct_ssm <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
     Sigma_eps[, , t] <- diag(sigma_eps[t, ]^2, nrow = N)
   }
 
-  # Initial state. Originally we used the stationary AR(1) variance
-  # for c_1: Sigma_1[1,1] = sigma_c^2 / (1 - rho^2). That created a
-  # self-fulfilling bias: when rho is small early in the chain, c_1
-  # is forced near 0 (small stationary variance), which biases c-draws
-  # small, which biases rho small. Use a diffuse prior on c_1 instead;
-  # the FFBS will learn the right scale from the data.
+  # Initial state.
+  #   Variant A: diffuse Sigma_1[1,1] = 100 on c_1 (the stationary
+  #     AR(1) variance would create a self-fulfilling bias when rho is
+  #     small early in the chain; let FFBS learn the right scale).
+  #   Variant B: Sigma_1[1,1] = 4 matches the Stan Variant B prior
+  #     c[1] ~ N(0, 2^2) — the canonical Stock-Watson diffuse start.
   mu_1 <- rep(0, M)
   Sigma_1 <- diag(M)
-  Sigma_1[1, 1] <- 100      # diffuse on c_1
+  Sigma_1[1, 1] <- if (variant == "B") 4 else 100
   for (i in 1:N) Sigma_1[1 + i, 1 + i] <- var_s_init
 
   list(

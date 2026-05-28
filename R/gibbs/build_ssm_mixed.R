@@ -28,7 +28,9 @@
 
 #' Build a mixed-frequency SSM for the AU MCT Variant A model.
 #'
-#' @param rho       Scalar AR(1) coef on c.
+#' @param rho       Scalar AR(1) coef on c. Ignored when `variant = "B"`
+#'                  (the RW common-factor variant sets the transition
+#'                  coefficient on c to 1).
 #' @param lambda    Length-N vector of time-invariant loadings.
 #' @param sigma_c   Length-T vector of common-factor innovation SDs.
 #' @param sigma_s   T x N matrix of sector-trend innovation SDs.
@@ -38,10 +40,16 @@
 #' @param T_        Number of time periods.
 #' @param N         Number of sectors.
 #' @param var_s_init Prior variance on s_{i,1}. Default 0.25.
+#' @param variant   "A" (default, AR(1) common factor, stationary init for
+#'                  c_1) or "B" (RW common factor, diffuse init for c_1
+#'                  matching the Stan Variant B prior `c[1] ~ N(0, 2^2)`).
 #' @return List of SSM matrices with augmented state, ready to pass
 #'   to kalman_filter / fast_smoother / simulation_smoother.
 build_mct_ssm_mixed <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
-                                obs_type, T_, N, var_s_init = 0.25) {
+                                obs_type, T_, N, var_s_init = 0.25,
+                                variant = c("A", "B")) {
+  variant <- match.arg(variant)
+  rho_eff <- if (variant == "B") 1 else rho
   stopifnot(length(lambda) == N,
             length(sigma_c) == T_,
             all(dim(sigma_s) == c(T_, N)),
@@ -52,8 +60,10 @@ build_mct_ssm_mixed <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   K <- N + 1L                # number of independent innovations
 
   # --- Transition F (sparse) -----------------------------------------
+  # Variant A: F[1,1] = rho (stationary AR(1) common factor).
+  # Variant B: F[1,1] = 1  (RW common factor — Stock-Watson common trend).
   F_ <- matrix(0, D, D)
-  F_[1L, 1L] <- rho
+  F_[1L, 1L] <- rho_eff
   F_[2L, 1L] <- 1
   F_[3L, 2L] <- 1
   for (i in seq_len(N)) {
@@ -104,17 +114,21 @@ build_mct_ssm_mixed <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   }
 
   # --- Initial state mean + covariance -------------------------------
-  # c_1 uses the STATIONARY AR(1) variance Sigma_1[1,1] = sigma_c[1]^2 /
-  # (1 - rho^2) to match the Stan Variant A/Ac prior. Earlier we tried
-  # a diffuse Sigma_1[1,1] = 100 to avoid a self-fulfilling rho bias
-  # when c_1 was forced near 0, but the on-real-data Step 10 result
-  # showed both choices give similar (low) rho posteriors — and the
-  # Stan baseline that we want to match uses stationary.
+  # c_1 prior:
+  #   Variant A: stationary AR(1) variance, Sigma_1[1,1] = sigma_c[1]^2 /
+  #     (1 - rho^2), matching the Stan Variant A/Ac prior.
+  #   Variant B: diffuse, Sigma_1[1,1] = 4, matching the Stan Variant B
+  #     prior c[1] ~ N(0, 2^2) (the canonical Stock-Watson "diffuse
+  #     start" for the random-walk common trend).
   # c_{t-1}, c_{t-2} lags don't have meaning at t=1: diffuse.
   # s_{i,1} matches Stan prior s_init ~ N(0, 0.5^2); lags diffuse.
   mu_1 <- rep(0, D)
   Sigma_1 <- diag(D)
-  Sigma_1[1L, 1L] <- sigma_c[1L]^2 / max(1 - rho^2, 1e-6)
+  Sigma_1[1L, 1L] <- if (variant == "B") {
+    4
+  } else {
+    sigma_c[1L]^2 / max(1 - rho^2, 1e-6)
+  }
   Sigma_1[2L, 2L] <- 100
   Sigma_1[3L, 3L] <- 100
   for (i in seq_len(N)) {

@@ -17,14 +17,14 @@ on:
 jobs:
   fit-and-publish:
     runs-on: ubuntu-latest
-    # GitHub-hosted ubuntu-latest is 4 vCPU / 16 GB. Cron path refits only
-    # Variant A (~93 min on M1; budget ~3 h on the slower x86 runner, plus
-    # ~30 min for setup/cmdstan/render). Variants B and C exceed the 350-min
-    # cap on a free runner, so they're left to manual local builds. To run
-    # the full three-variant pipeline here, use a self-hosted M1 runner or
-    # a paid larger runner and replace the "A only" target list in the
-    # tar_make() call below with a bare tar_make().
-    timeout-minutes: 300
+    # GitHub-hosted ubuntu-latest is 4 vCPU / 16 GB. Production model is
+    # Variant B (RW common trend) fit by the in-house Gibbs sampler on the
+    # 33-sub-group quarterly panel. Wall time is ~4-5 min on M1; budget
+    # ~15-20 min on the slower x86 runner, plus ~5 min for R setup and
+    # ~2 min for the Quarto render. No CmdStan needed any more — the
+    # earlier Stan-based pipeline (timeout 300 min) is in
+    # outputs/draws/legacy_11group/ for reference.
+    timeout-minutes: 60
 
     permissions:
       contents: write    # for the gh-pages deploy
@@ -75,14 +75,6 @@ jobs:
           version: "1.4.557"
 
       # ---------------------------------------------------------------- Caches
-      - name: Cache CmdStan
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cmdstan
-          key: ${{ runner.os }}-cmdstan-2.36.0
-          restore-keys: ${{ runner.os }}-cmdstan-
-
       - name: Cache targets store + fits
         if: steps.gate.outputs.run == 'true'
         uses: actions/cache@v4
@@ -95,84 +87,46 @@ jobs:
 
       # -------------------------------------------------------- R dependencies
       # setup-r-dependencies reads DESCRIPTION Imports/Suggests automatically.
-      # cmdstanr is not on CRAN; install from GitHub (stan-dev/cmdstanr) —
-      # pak resolves the `owner/repo` shorthand natively.
+      # No CmdStan needed any more — the production sampler is the in-house
+      # Gibbs implementation in R/gibbs/, which has only base-R + MASS as
+      # runtime deps.
       - name: Install R packages
         if: steps.gate.outputs.run == 'true'
         uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          # `packages` defaults to `local::.` which installs the project
-          # (and its DESCRIPTION Imports) — we want that. cmdstanr is added
-          # via `extra-packages` because it's not on CRAN.
-          extra-packages: |
-            stan-dev/cmdstanr@v0.9.0
-
-      - name: Install CmdStan
-        if: steps.gate.outputs.run == 'true'
-        shell: Rscript {0}
-        run: |
-          ver <- tryCatch(cmdstanr::cmdstan_version(),
-                          error = function(e) NULL,
-                          warning = function(w) NULL)
-          if (is.null(ver) || length(ver) == 0L || is.na(ver)) {
-            cat("No cached CmdStan found - installing.\n")
-            cmdstanr::install_cmdstan(cores = 2)
-          } else {
-            cat("Using cached CmdStan", as.character(ver), "\n")
-          }
 
       # ----------------------------------------------------------- Rotate fits
-      # Promote last run's `fit_A.rds` to `_prior.rds` so the dashboard's
+      # Promote last run's `fit_B.rds` to `_prior.rds` so the dashboard's
       # revisions + revision-attribution panels have a prior vintage to
-      # compare against. (A is the headline post-LOO; the dashboard's
-      # `posterior_revisions(fit_A, fit_A_prior, ...)` chunk reads these.)
+      # compare against.
       - name: Rotate prior vintage
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           mkdir -p outputs/draws
-          if [[ -f outputs/draws/fit_A.rds ]]; then
-            cp outputs/draws/fit_A.rds      outputs/draws/fit_A_prior.rds
+          if [[ -f outputs/draws/fit_B.rds ]]; then
+            cp outputs/draws/fit_B.rds      outputs/draws/fit_B_prior.rds
             cp outputs/draws/stan_data.rds  outputs/draws/stan_data_prior.rds
-            echo "Rotated fit_A.rds -> fit_A_prior.rds"
+            echo "Rotated fit_B.rds -> fit_B_prior.rds"
           else
-            echo "No previous fit_A.rds — revisions panel will be empty this run."
+            echo "No previous fit_B.rds — revisions panel will be empty this run."
           fi
 
       # ----------------------------------------------------------------- Build
-      # Cron path: only refit Variant A (B and C exceed the 350-min runner
-      # budget — see workflow header comment). The full three-variant
-      # dashboard is built locally by the maintainer when needed.
-      - name: Run targets pipeline (Variant A only)
+      - name: Run targets pipeline
         if: steps.gate.outputs.run == 'true'
         shell: Rscript {0}
         run: |
           options(repos = c(CRAN = "https://cloud.r-project.org"))
-          # Refit A and only the A-side derived targets needed by the
-          # A-only dashboard. fit_B and fit_C are intentionally skipped.
-          targets::tar_make(c("stan_data", "fit_A",
-                              "trend_A", "common_share_A",
-                              "sector_contribs_A", "loo_A"))
-          # fit_A is a format = "file" target — value is the absolute path.
-          fit_A <- readRDS(targets::tar_read_raw("fit_A"))
-          diag <- fit_A$diagnostic_summary()
-          cat(sprintf("[A] divergent=%d  max_treedepth=%d\n",
-                      sum(diag$num_divergent),
-                      sum(diag$num_max_treedepth)))
+          targets::tar_make()
 
-      - name: Render A-only dashboard
+      - name: Verify dashboard build artefacts
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
-          quarto render dashboard/index_a_only.qmd
-          # Standardise output to dashboard/_site/index.html for the publish step
-          mkdir -p dashboard/_site
-          if [[ -f dashboard/index_a_only.html ]]; then
-            mv dashboard/index_a_only.html dashboard/_site/index.html
-          elif [[ -f dashboard/_site/index_a_only.html ]]; then
-            mv dashboard/_site/index_a_only.html dashboard/_site/index.html
-          fi
+          # tar_quarto(dashboard, ...) above already rendered the site to
+          # dashboard/_site/. Confirm index.html exists for the publish step.
           ls -la dashboard/_site/
+          test -f dashboard/_site/index.html
 
       # ----------------------------------------------------------------- Deploy
       - name: Publish dashboard
@@ -187,16 +141,14 @@ jobs:
           commit_message: "Dashboard update for ${{ github.run_id }}"
 
       # ------------------------------------------------------ Persist fits
-      # Cron path only refits A — only that fit and the current stan_data
-      # are uploaded. fit_B / fit_C are not produced on the runner.
-      - name: Upload fit_A as workflow artefact
+      - name: Upload fit_B as workflow artefact
         if: steps.gate.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mct-fits-${{ github.run_id }}
           path: |
-            outputs/draws/fit_A.rds
-            outputs/draws/fit_A_prior.rds
+            outputs/draws/fit_B.rds
+            outputs/draws/fit_B_prior.rds
             outputs/draws/stan_data.rds
             outputs/draws/stan_data_prior.rds
           retention-days: 90

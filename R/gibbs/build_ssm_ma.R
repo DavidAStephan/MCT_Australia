@@ -39,7 +39,18 @@
 build_mct_ssm_ma <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
                              theta, T_, N, q_MA = 3L,
                              var_s_init = 0.25,
-                             obs_noise_floor = 1e-8) {
+                             obs_noise_floor = 1e-8,
+                             variant = c("A", "B"),
+                             s_outlier = NULL) {
+  variant <- match.arg(variant)
+  rho_eff <- if (variant == "B") 1 else rho
+
+  # Outlier scale-mixture support: per-period scale that multiplies
+  # sigma_eps when set. Default = all-ones (no outliers).
+  if (is.null(s_outlier)) s_outlier <- matrix(1, T_, N)
+  stopifnot(all(dim(s_outlier) == c(T_, N)))
+  sigma_eps_eff <- sigma_eps * s_outlier
+
   stopifnot(length(lambda) == N,
             length(sigma_c) == T_,
             all(dim(sigma_s) == c(T_, N)),
@@ -54,8 +65,10 @@ build_mct_ssm_ma <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   eps_pos_start <- function(i) 1L + N + eps_block * (i - 1L) + 1L
 
   # --- Transition F (D x D, sparse) ---------------------------------
+  # Variant A: F[1,1] = rho (stationary AR(1) common factor)
+  # Variant B: F[1,1] = 1  (RW common factor / Stock-Watson trend)
   F_ <- matrix(0, D, D)
-  F_[1L, 1L] <- rho                       # c_t AR(1)
+  F_[1L, 1L] <- rho_eff
   for (i in seq_len(N)) F_[1L + i, 1L + i] <- 1   # s_i RW
   for (i in seq_len(N)) {
     p <- eps_pos_start(i)
@@ -83,7 +96,7 @@ build_mct_ssm_ma <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
     Sigma_eta[, , t] <- diag(c(
       sigma_c[t + 1L]^2,                          # c noise
       sigma_s[t + 1L, ]^2,                        # s_i noise
-      sigma_eps[t + 1L, ]^2                       # eps noise (sigma^2 var)
+      sigma_eps_eff[t + 1L, ]^2                   # eps noise (sigma*s_outlier)^2
     ))
   }
 
@@ -108,16 +121,22 @@ build_mct_ssm_ma <- function(rho, lambda, sigma_c, sigma_s, sigma_eps,
   }
 
   # --- Initial state mean + covariance -----------------------------
+  # Variant A: stationary AR(1) prior on c_1
+  # Variant B: diffuse N(0, 4) on c_1 (Stock-Watson canonical)
   mu_1 <- rep(0, D)
   Sigma_1 <- diag(D)
-  Sigma_1[1L, 1L] <- sigma_c[1L]^2 / max(1 - rho^2, 1e-6)
+  Sigma_1[1L, 1L] <- if (variant == "B") {
+    4
+  } else {
+    sigma_c[1L]^2 / max(1 - rho^2, 1e-6)
+  }
   for (i in seq_len(N)) Sigma_1[1L + i, 1L + i] <- var_s_init
-  # eps states start with variance sigma_eps[1, i]^2 (matches the new
-  # convention where eps state's marginal variance = sigma_eps^2).
-  # Lagged eps at t=1 are unobserved priors at the same scale.
+  # eps states start with variance (sigma_eps[1, i] * s_outlier[1, i])^2
+  # to match the outlier-aware innovation variance convention. With no
+  # outliers (s_outlier == 1) this reduces to the original sigma_eps^2.
   for (i in seq_len(N)) {
     p <- eps_pos_start(i)
-    for (l in 0:q_MA) Sigma_1[p + l, p + l] <- sigma_eps[1L, i]^2
+    for (l in 0:q_MA) Sigma_1[p + l, p + l] <- sigma_eps_eff[1L, i]^2
   }
 
   list(

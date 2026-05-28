@@ -9,12 +9,53 @@ the auto-memory at
 
 ## TL;DR — what to do next
 
-**Run the outlier-enabled Gibbs on real AU CPI data** and check whether
-the model flags known volatile events (fuel spikes 2022-23, COVID
-disruptions 2020). Then compare to the baseline (no-outlier) Gibbs via
-LOO to settle whether outliers materially improve fit on AU data.
+**Investigate the constant-λ trend/common-share gap between Stan Ac
+and Gibbs.** Step 14/15 (2026-05-26 afternoon, this session) ran:
+(a) baseline Gibbs vs +outliers LOO comparison — baseline wins
+**(elpd_diff = −3911, SE 883, 4.4σ; outliers HURT fit on AU data)**;
+(b) Stan Variant Ac refit — the previously-suspected "TVP-vs-constant-λ"
+explanation for the Gibbs-vs-Stan trend gap is **falsified**. Stan Ac
+(constant λ) gives essentially the same trend as Stan A (TVP λ),
+both ~0.65 latest-t. Gibbs gives 1.02 latest-t. Common-share is the
+shocker: Stan Ac=0.069 vs Gibbs=0.915.
+
+`rho` agrees across both samplers (Stan Ac 0.376 vs Gibbs 0.359 — the
+AR(1) machinery is correct). So the model-spec difference is in the
+variance decomposition, not the persistence parameter. Suspect (a) a
+common_share formula divergence between `mct_gibbs_fit.R`'s
+`.compute_derived_gq` and Stan's `generated quantities`, or
+(b) a sigma_c / sigma_s prior or scaling discrepancy. Diff the two
+formulas first, then compare posterior sigma_c and sigma_s draws.
 
 ## Concrete next actions (priority order)
+
+### 0. Investigate trend / common-share gap (Stan Ac vs Gibbs)
+
+The new finding from this session: with the Stan Ac (constant λ) refit
+done, the trend-level gap and common-share gap can no longer be blamed
+on the TVP-vs-constant λ difference. The rho posteriors match, so it's
+not a sampler bug in the AR(1) update. Concrete debugging steps:
+
+```r
+# Load both
+for (f in list.files("R",       "\\.R$", full.names = TRUE)) source(f)
+for (f in list.files("R/gibbs", "\\.R$", full.names = TRUE)) source(f)
+sd <- readRDS("outputs/draws/stan_data.rds")
+fit_Ac  <- readRDS("outputs/draws/fit_Ac.rds")
+fit_gib <- mct_gibbs_fit(readRDS("outputs/draws/fit_gibbs_baseline.rds"),
+                         sd)
+
+# 1. Compare posterior sigma_c[T] and sigma_s[T, i]
+sc_Ac  <- as.numeric(fit_Ac$draws(paste0("sigma_c[", sd$T, "]"),
+                                  format = "matrix"))
+sc_gib <- as.numeric(fit_gib$draws(paste0("sigma_c[", sd$T, "]"),
+                                   format = "matrix"))
+# If sc_Ac / sc_gib differ by ~10x, that's where the common-share gap is.
+
+# 2. Diff common_share formulas:
+#    Stan: see stan/mct_aus_Ac.stan generated_quantities block
+#    Gibbs: R/gibbs/mct_gibbs_fit.R, .compute_derived_gq()
+```
 
 ### 1. Real-data outlier benchmark (~30 min compute, ~15 min review)
 
@@ -136,13 +177,76 @@ passing**):
 
 **Headline numbers (real AU data, T=435, N=11):**
 
-| | Stan Variant A | Gibbs (no MA, no outliers) |
-|---|---|---|
-| Wall time | 93 min | **5.2 min** (4-6× faster) |
-| rho posterior | 0.371 [0.18, 0.54] | 0.360 [0.17, 0.53] — **identical** |
-| Trend latest-t | 0.647 | 1.059 (model-spec diff: TVP vs constant λ) |
+| | Stan Variant A (TVP λ) | Stan Variant Ac (const λ) | Gibbs (const λ, no outliers) | Gibbs +outliers |
+|---|---|---|---|---|
+| Wall time | 93 min | 103 min | **5.4 min** | 5.3 min |
+| rho posterior median | 0.371 [0.18, 0.54] | 0.376 [0.18, 0.55] | 0.359 [0.17, 0.53] | (similar) |
+| Trend latest-t median | 0.647 | 0.652 | 1.023 | — |
+| Common-share latest-t | (similar) | 0.069 | 0.915 | — |
+| LOO vs Gibbs baseline | — | — | (best of the two below) | elpd −3911, SE 883 |
+
+The trend/common-share gap between Stan and Gibbs is NOT a TVP-vs-const
+artifact (Stan A and Ac agree). See action #0 for the investigation
+plan. rho matches across all three so the AR(1) sampler is correct.
 
 ## Session log (recent → older, compressed)
+
+### 2026-05-26 afternoon — Steps 14 + 15: outlier benchmark + Ac refit
+
+**Step 14: real-data outlier benchmark.**
+Ran baseline Gibbs (no outliers, 5.4 min) and +outliers Gibbs (5.3 min)
+on cached AU data. Initial outlier run had a bug — 99.9% of obs flagged
+because the mixed-freq path's update_ps was counting missing/quarterly
+cells as "outliers", collapsing ps from prior 0.975 to ~0.19. **Fixed
+in `R/gibbs/gibbs_sweep_mixed.R`**: v1 outlier mixture now applies to
+monthly obs only (quarterly + missing cells get s_outlier=1; ps update
+excludes them via NA mask). Re-run: 6/1698 obs flagged (0.4%), ps stays
+near 0.97 across sectors. Flags are sensible: Health 2025-01/2026-01,
+Transport 2026-03, Education 2025-02/2026-02 — all monthly tail spikes.
+
+Also extended `R/gibbs/mct_gibbs_fit.R` `.compute_derived_gq()` to
+compute log_lik for quarterly observations (avg-of-3-months mean +
+1/9-of-sum-of-3 variance, matching `build_mct_ssm_mixed`'s observation
+row for `ot==2`). Without this, LOO would only score the 253 monthly
+obs; with this, all 1698 obs contribute. With-outlier path also
+multiplies sigma_eps by s_outlier in the log_lik computation.
+
+**LOO comparison (Step 14b):** baseline preferred by **elpd_diff = −3911
+(SE 883, |Δ|/SE = 4.43)**. Outliers HURT fit on AU data — too few real
+outliers to justify the extra parameters. p_loo nearly doubled (3203
+→ 7772). Pareto-k diagnostics flag ~30-50% of obs as bad in both fits
+(state-space LOO is inherently high-k; treat the comparison as
+indicative). Combined-MA+mixed-freq stretch goal is now deferred per
+the plan's own gating logic ("Defer unless item 2 shows outliers
+aren't enough").
+
+**Step 15: Stan Variant Ac refit (~103 min, 9/6000 divergences — fine).**
+The Ac fit was deleted in the May speedup exploration; regenerated as
+`outputs/draws/fit_Ac.rds` for the apples-to-apples Gibbs comparison.
+Result is genuinely surprising:
+
+|                       | Stan Variant A (TVP λ) | Stan Variant Ac (const λ) | Gibbs (const λ)  |
+|---                    |---                     |---                        |---               |
+| rho median            | 0.371 [0.18, 0.54]     | **0.376 [0.18, 0.55]**    | 0.359 [0.17, 0.53] |
+| latest-t trend median | 0.647                  | **0.652**                 | 1.023            |
+| latest-t common-share | (similar)              | **0.069**                 | 0.915            |
+
+Stan A and Stan Ac give essentially the same trend (~0.65); Gibbs
+gives 1.02. So the trend-level gap is **not** the TVP-vs-constant-λ
+model spec — it's something else. The common-share gap (0.07 vs 0.92)
+is the bigger smoking gun. rho matches across all three, so the AR(1)
+machinery is correct. Suspect a `common_share` formula divergence or a
+sigma_c / sigma_s prior/scaling difference. See action #0 above.
+
+Files written:
+`outputs/draws/fit_gibbs_baseline.rds`,
+`outputs/draws/fit_gibbs_outliers.rds`,
+`outputs/draws/fit_Ac.rds`,
+`outputs/draws/loo_baseline_vs_outliers.rds`,
+`outputs/tables/outlier_top5_per_sector.csv`.
+Scripts: `scripts/step14_outlier_benchmark.R`,
+`scripts/step14b_loo_baseline_vs_outliers.R`,
+`scripts/step15_refit_Ac.R`, `scripts/step15b_compare_Ac_vs_gibbs.R`.
 
 ### 2026-05-27 evening — Steps 12 + 13: MA(q) + outliers
 

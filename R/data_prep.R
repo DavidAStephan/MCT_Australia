@@ -1,8 +1,11 @@
 # Data preparation: from raw CPI index numbers to the (T x N) matrices
 # that the Stan model consumes.
 #
-# The brief specifies a latent monthly clock from 1990-01 to the current
-# month. Each cell (t, n) is one of three states encoded by `obs_type`:
+# Production sample starts at 1993-01 (RBA inflation-targeting era — see
+# Step 16/17 sensitivity study). The brief originally specified 1990-01;
+# the regime change of the 1990-92 disinflation was inflating the rho
+# posterior of Variant A. Each cell (t, n) is one of three states encoded
+# by `obs_type`:
 #
 #   obs_type == 0  -> unobserved (Stan integrates over the latent inflation)
 #   obs_type == 1  -> monthly observation (Apr 2024 onward)
@@ -10,7 +13,12 @@
 #                     quarter; equals the simple average of latent monthly
 #                     inflations in months t-2, t-1, t
 
-DEMEAN_WINDOW <- c(2000, 2019)
+# Demean window matches the production sample start (1993-01) — see
+# Step 16/17 sensitivity study (May 2026): switching to 1993-onward
+# cuts the early-90s disinflation regime change, and using a
+# 1993-2019 demean window keeps the demeaned series in-sample with
+# minimal pandemic contamination.
+DEMEAN_WINDOW <- c(1993, 2019)
 
 #' Convert a tidy (date, group, index, source) frame to annualised
 #' period-on-period log-differenced inflation.
@@ -60,8 +68,9 @@ demean_series <- function(infl_df,
 #' consumes.
 #'
 #' Combines quarterly and monthly inflation onto a single monthly latent
-#' clock running from `start = "1990-01-01"` to the most recent observed
-#' month. For t >= 2024-04-01 the monthly observation is used (obs_type=1);
+#' clock running from `start = "1993-01-01"` (RBA inflation-targeting era)
+#' to the most recent observed month. For t >= 2024-04-01 the monthly
+#' observation is used (obs_type=1);
 #' for earlier dates that coincide with a quarter-end month, the quarterly
 #' observation is placed there (obs_type=2); other cells are unobserved
 #' (obs_type=0).
@@ -90,11 +99,11 @@ demean_series <- function(infl_df,
 build_stan_data <- function(infl_demeaned,
                             weights,
                             ref = "Housing",
-                            start = as.Date("1990-01-01"),
+                            start = as.Date("1993-01-01"),
                             monthly_cutover = as.Date("2024-04-01")) {
   groups <- levels(infl_demeaned$group)
   N <- length(groups)
-  stopifnot(N == 11)
+  stopifnot("Expected N = 11 groups or 33 sub-groups" = N %in% c(11L, 33L))
 
   # Align weights to the group ordering used by infl_demeaned, normalise to 1.
   stopifnot(all(c("group", "weight") %in% names(weights)))
@@ -170,5 +179,115 @@ build_stan_data <- function(infl_demeaned,
     obs_type = obs_type,
     dates = dates,
     groups = groups
+  )
+}
+
+#' Build a QUARTERLY-CLOCKED stan_data list for the sub-group MCT model.
+#'
+#' Unlike `build_stan_data()` (which uses a monthly latent clock to
+#' accommodate mixed-frequency observations at the group level), this
+#' builder operates entirely at quarterly resolution. The latent
+#' common-factor and sector-trend processes are quarterly, observations
+#' are quarterly, and there is no `obs_type` array — every (t, i) cell
+#' is either observed (finite y) or missing (NA).
+#'
+#' This is the right structure for sub-group analysis where the ABS only
+#' publishes quarterly data, and avoids the underidentification that
+#' arises when you try to estimate 399 monthly latent states from ~125
+#' quarterly observations per series.
+#'
+#' @param infl_demeaned Output of `demean_series()` applied to a
+#'   quarterly-only inflation frame (e.g. from
+#'   `fetch_cpi_quarterly_subgroup()`).
+#' @param weights Tibble with columns `group` and `weight` (sums to ~100).
+#' @param ref Name of the reference series for identification
+#'   (default "Rents" — the largest sub-group within Housing observed
+#'   continuously back to the early 1970s).
+#' @param start Earliest quarter to include (default 1993-Q1).
+#' @return A list with fields:
+#'   - `T`, `N`, `ref` (integer), `w` (length-N, sums to 1)
+#'   - `n_obs_q`, `t_q`, `i_q`, `y_q` (flat quarterly obs arrays)
+#'   - `y` (T x N matrix with NA for missing), `dates` (length-T Date
+#'     vector — first day of each quarter), `groups` (length-N
+#'     character vector). For API compatibility with the monthly
+#'     `build_stan_data()` we also include zero-length `n_obs_m`, `t_m`,
+#'     `i_m`, `y_m` and an `obs_type` matrix with 2 (observed) or
+#'     0 (missing).
+build_stan_data_quarterly <- function(infl_demeaned,
+                                      weights,
+                                      ref = "Rents",
+                                      start = as.Date("1993-01-01")) {
+  groups <- levels(infl_demeaned$group)
+  N <- length(groups)
+  stopifnot("Expected N = 33 sub-groups" = N == 33L)
+
+  stopifnot(all(c("group", "weight") %in% names(weights)))
+  w_lookup <- setNames(weights$weight, as.character(weights$group))
+  stopifnot("All groups must have weights" =
+              all(groups %in% names(w_lookup)))
+  w <- as.numeric(w_lookup[groups]) / sum(as.numeric(w_lookup[groups]))
+
+  ref_idx <- match(ref, groups)
+  stopifnot("ref must be one of the groups" = !is.na(ref_idx))
+
+  end <- max(infl_demeaned$date)
+  # Align both ends to first-of-quarter month (ABS quarter labels use
+  # the LAST month of the quarter — e.g. Q1 = March, Q2 = June). We
+  # build a sequence on those last-month-of-quarter dates so the obs
+  # join lines up cleanly.
+  align_quarter_end <- function(d) {
+    m <- as.integer(format(d, "%m"))
+    qend_month <- ((m - 1L) %/% 3L) * 3L + 3L
+    as.Date(sprintf("%d-%02d-01", as.integer(format(d, "%Y")), qend_month))
+  }
+  start_q <- align_quarter_end(start)
+  end_q   <- align_quarter_end(end)
+  dates   <- seq(start_q, end_q, by = "3 months")
+  T_      <- length(dates)
+
+  y <- matrix(NA_real_, nrow = T_, ncol = N)
+  colnames(y) <- groups
+
+  q_df <- infl_demeaned |>
+    dplyr::filter(.data$source == "quarterly")
+  for (i in seq_len(nrow(q_df))) {
+    t_idx <- match(as.Date(format(q_df$date[i], "%Y-%m-01")), dates)
+    n_idx <- match(as.character(q_df$group[i]), groups)
+    if (!is.na(t_idx) && !is.na(n_idx)) {
+      y[t_idx, n_idx] <- q_df$inflation[i]
+    }
+  }
+
+  q_idx <- which(!is.na(y), arr.ind = TRUE)
+
+  # obs_type: 2 = quarterly observed, 0 = missing — kept for downstream
+  # code that expects this field (postprocess.R reads it for diagnostics).
+  obs_type <- matrix(0L, nrow = T_, ncol = N)
+  obs_type[!is.na(y)] <- 2L
+
+  list(
+    T   = T_,
+    N   = N,
+    ref = ref_idx,
+    w   = w,
+    # For a quarterly-clocked panel each "quarterly" observation IS the
+    # single-period latent, not a 3-month average. Surface obs in the
+    # `*_m` slots so the downstream `.compute_derived_gq` log_lik logic
+    # (which expects direct observations there) works without further
+    # case-splitting. `n_obs_q = 0` ensures the avg-of-3 quarterly path
+    # is skipped.
+    n_obs_m = nrow(q_idx),
+    t_m = as.integer(q_idx[, 1]),
+    i_m = as.integer(q_idx[, 2]),
+    y_m = as.numeric(y[q_idx]),
+    n_obs_q = 0L,
+    t_q = integer(0),
+    i_q = integer(0),
+    y_q = numeric(0),
+    y        = y,
+    obs_type = obs_type,
+    dates    = dates,
+    groups   = groups,
+    clock    = "quarterly"
   )
 }

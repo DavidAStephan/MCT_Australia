@@ -62,14 +62,153 @@ sector_contributions <- function(fit, weights, dates, groups,
   stopifnot(length(weights) == N)
   w <- weights / sum(weights)
   s <- extract_matrix_array(fit, "sector_trend", T_, N)
-  # Broadcast w along the sector dimension
-  contribs <- sweep(s, 3, w, FUN = "*")
+
+  # For Variant B (RW common trend) we need to include each sector's
+  # share of the common-trend movement so per-sector contributions sum
+  # to the headline trend. Attribute the common-trend contribution to
+  # sector i as w_i * lambda_i * c_t. We can detect Variant B from the
+  # underlying fit's stored config (mct_gibbs_fit attaches it).
+  variant_B <- !is.null(fit$config) &&
+               isTRUE(fit$config$variant == "B")
+  if (variant_B) {
+    lambda <- extract_path_matrix(fit, "lambda")  # n_draw x N
+    c_path <- extract_path_matrix(fit, "c")       # n_draw x T_
+    # Per-draw, per-(t, i): w_i * lambda_i * c_t. `s` (and the result)
+    # is shape (n_draw, T_, N); build com_arr to match.
+    n_draw <- nrow(c_path)
+    com_arr <- array(0, dim = c(n_draw, T_, N))
+    for (i in seq_len(N)) {
+      # lambda[, i] is length n_draw; replicate across T_:
+      com_arr[, , i] <- w[i] * (lambda[, i] * c_path)
+    }
+    contribs <- sweep(s, 3, w, FUN = "*") + com_arr
+  } else {
+    # Variant A: common factor is a cycle, NOT part of trend. Sector
+    # contribution is just w_i * s_{i,t}.
+    contribs <- sweep(s, 3, w, FUN = "*")
+  }
+
   dplyr::bind_rows(lapply(seq_len(N), function(i) {
     tib <- summarise_path(contribs[, , i], dates, probs)
     tib$group <- groups[i]
     tib
   })) |>
     dplyr::mutate(group = factor(.data$group, levels = groups)) |>
+    dplyr::select("date", "group", "lower", "median", "upper")
+}
+
+#' Compute the weighted-average of per-series demean offsets — the
+#' constant to add back to a demeaned `trend_path()` output to recover
+#' raw % inflation (so the trend line is on the same axis as headline
+#' or trimmed-mean CPI YoY series).
+#'
+#' @param infl_demeaned The same tibble passed to `build_stan_data...()`.
+#'   Must have columns `group`, `series_mean` (added by `demean_series()`).
+#' @param weights Tibble with `group` and `weight` (the same one passed
+#'   to the stan_data builder; normalised internally).
+#' @return Scalar numeric — the pp constant to add to demeaned trend.
+demean_offset <- function(infl_demeaned, weights) {
+  stopifnot("series_mean" %in% names(infl_demeaned))
+  means <- infl_demeaned |>
+    dplyr::distinct(.data$group, .data$series_mean) |>
+    dplyr::filter(!is.na(.data$series_mean))
+  w_lookup <- setNames(weights$weight, as.character(weights$group))
+  w <- w_lookup[as.character(means$group)] / sum(weights$weight)
+  sum(w * means$series_mean)
+}
+
+#' Decompose the (demeaned) Variant B trend into per-bucket common +
+#' sector-specific components, matching the NY Fed MCT decomposition
+#' chart's "Sector-Specific and Common Components" view.
+#'
+#' For each macro bucket (Goods / Services ex. housing / Housing):
+#'   common[t]   = sum_{i in bucket} w_i * lambda_i * c_t
+#'   specific[t] = sum_{i in bucket} w_i * s_{i,t}
+#'
+#' Per-draw, then median + 68% band.
+#'
+#' @param fit mct_gibbs_fit wrapper (Variant B).
+#' @param weights Numeric vector of length N (sub-group weights).
+#' @param dates Length-T Date vector.
+#' @param sub_groups Length-N character vector — sub-group labels.
+#' @param bucket_map Named character (sub-group -> bucket).
+#' @return Long tibble: date, bucket, component (common|specific),
+#'   lower, median, upper.
+decompose_trend_by_bucket <- function(fit, weights, dates, sub_groups,
+                                      bucket_map,
+                                      probs = c(0.16, 0.5, 0.84)) {
+  T_ <- length(dates); N <- length(sub_groups)
+  stopifnot(length(weights) == N)
+  w <- weights / sum(weights)
+
+  s_arr  <- extract_matrix_array(fit, "sector_trend", T_, N)  # draws x T x N
+  lambda <- extract_path_matrix(fit, "lambda")                # draws x N
+  c_path <- extract_path_matrix(fit, "c")                     # draws x T
+
+  buckets <- unique(unname(bucket_map[sub_groups]))
+  out <- list()
+  for (b in buckets) {
+    in_bucket <- which(bucket_map[sub_groups] == b)
+    # Common contribution: sum_{i in bucket} w_i * lambda_i * c_t
+    common_per_draw <- matrix(0, nrow(c_path), T_)
+    for (i in in_bucket) {
+      common_per_draw <- common_per_draw +
+        w[i] * (lambda[, i] * c_path)
+    }
+    # Specific contribution: sum_{i in bucket} w_i * s_{i,t}
+    specific_per_draw <- matrix(0, nrow(c_path), T_)
+    for (i in in_bucket) {
+      specific_per_draw <- specific_per_draw + w[i] * s_arr[, , i]
+    }
+    out[[length(out) + 1L]] <- summarise_path(common_per_draw,
+                                              dates, probs) |>
+      dplyr::mutate(bucket = b, component = "Common")
+    out[[length(out) + 1L]] <- summarise_path(specific_per_draw,
+                                              dates, probs) |>
+      dplyr::mutate(bucket = b, component = "Sector-specific")
+  }
+  bucket_order <- c("Goods", "Services ex. housing", "Housing")
+  dplyr::bind_rows(out) |>
+    dplyr::mutate(bucket = factor(.data$bucket, levels = bucket_order),
+                  component = factor(.data$component,
+                                     levels = c("Common", "Sector-specific"))) |>
+    dplyr::select("date", "bucket", "component",
+                  "lower", "median", "upper")
+}
+
+#' Roll up a sub-group `sector_contributions()` tibble to its parent
+#' groups (the 11 standard ABS CPI groups). Sums the medians per
+#' parent-group; the upper/lower bands of the summed series are NOT the
+#' simple sum of the per-sub-group bands (medians don't sum exactly), so
+#' the returned `lower`/`upper` for parent-groups are the simple sum and
+#' should be treated as illustrative — they aren't intended for tight
+#' uncertainty quantification. For the stacked-area chart, only `median`
+#' is used.
+#'
+#' @param contribs Long tibble from `sector_contributions()`. The `group`
+#'   factor levels are the sub-group names.
+#' @param parent_map Named character vector (sub-group -> parent), e.g.
+#'   `abs_subgroup_parent()`.
+#' @param parent_order Optional character vector of parent group names in
+#'   the order to factor them. Defaults to `unique(parent_map)`.
+aggregate_contribs_by_parent <- function(contribs, parent_map,
+                                         parent_order = NULL) {
+  parent_levels <- if (is.null(parent_order)) {
+    unique(unname(parent_map))
+  } else {
+    parent_order
+  }
+  contribs |>
+    dplyr::mutate(parent = factor(parent_map[as.character(.data$group)],
+                                  levels = parent_levels)) |>
+    dplyr::group_by(.data$date, .data$parent) |>
+    dplyr::summarise(
+      lower  = sum(.data$lower),
+      median = sum(.data$median),
+      upper  = sum(.data$upper),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(group = "parent") |>
     dplyr::select("date", "group", "lower", "median", "upper")
 }
 

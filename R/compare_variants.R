@@ -135,10 +135,15 @@ compare_trend_plot <- function(..., dates,
 }
 
 #' Common-share comparison plot. Same dispatch as compare_trend_plot.
+#'
+#' `since` mirrors `plot_common_share()` — common_share is poorly
+#' identified on quarterly-only data, so we typically restrict to the
+#' monthly-data era (Apr 2024 onward).
 compare_common_share_plot <- function(..., dates,
                                       labels = NULL,
                                       probs = c(0.16, 0.5, 0.84),
-                                      title = "Common share of inflation variance") {
+                                      title = "Common share of inflation variance",
+                                      since = NULL) {
   fits <- list(...)
   if (is.null(labels)) {
     labels <- if (length(fits) == 2) c("A: AR(1) common", "B: RW common trend")
@@ -147,6 +152,10 @@ compare_common_share_plot <- function(..., dates,
               else LETTERS[seq_along(fits)]
   }
   summaries <- lapply(fits, common_share_path, dates = dates, probs = probs)
+  if (!is.null(since)) {
+    summaries <- lapply(summaries, function(s)
+      s[s$date >= as.Date(since), , drop = FALSE])
+  }
   plot_compare_paths(summaries, labels = labels,
                      title = title, ylab = NULL,
                      subtitle = "Median + 68% credible band") +

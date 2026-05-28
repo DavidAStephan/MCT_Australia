@@ -1,6 +1,6 @@
 ---
 title: "Australian Multivariate Core Trend Inflation"
-subtitle: "Bayesian dynamic-factor decomposition of monthly and quarterly CPI"
+subtitle: "A Stock-Watson decomposition of quarterly ABS CPI sub-groups"
 date: today
 date-format: "MMMM YYYY"
 ---
@@ -11,11 +11,9 @@ suppressMessages({
   library(targets); library(tarchetypes)
   library(dplyr); library(tibble); library(lubridate)
   library(ggplot2); library(scales)
-  library(loo); library(posterior); library(arrow)
+  library(loo); library(posterior); library(arrow); library(MASS)
 })
 
-# Project source files. When rendered via `tar_quarto()`, the working
-# directory is `dashboard/`, so paths step up one level.
 PROJECT_ROOT <- if (file.exists("_targets.R")) {
   normalizePath(".")
 } else if (file.exists("../_targets.R")) {
@@ -23,244 +21,222 @@ PROJECT_ROOT <- if (file.exists("_targets.R")) {
 } else {
   stop("Cannot locate _targets.R from ", getwd())
 }
-for (f in list.files(file.path(PROJECT_ROOT, "R"), "\\.R$", full.names = TRUE)) source(f)
+for (f in list.files(file.path(PROJECT_ROOT, "R"),       "\\.R$", full.names = TRUE)) source(f)
+for (f in list.files(file.path(PROJECT_ROOT, "R/gibbs"), "\\.R$", full.names = TRUE)) source(f)
 targets::tar_config_set(store = file.path(PROJECT_ROOT, "_targets"))
 
-tar_load(c(
-  stan_data, weights,
-  trend_A, trend_B, trend_C,
-  common_share_A, common_share_B, common_share_C,
-  sector_contribs_A, sector_contribs_B, sector_contribs_C,
-  fit_A, fit_B, fit_C, variant_comparison
-))
-
-# fit_{A,B,C} targets are `format = "file"` — value is the absolute path
-# string (because we configured the store with an absolute path above).
-# Load the full CmdStanMCMC objects for chunks that use them directly.
-fit_A <- readRDS(fit_A)
+tar_load(c(stan_data, weights, infl_demeaned,
+           headline_yoy, trimmed_mean_yoy,
+           trend_B, common_share_B, sector_contribs_B,
+           fit_B, fit_B_wrap, loo_B))
 fit_B <- readRDS(fit_B)
-fit_C <- readRDS(fit_C)
 
-latest_month <- max(stan_data$dates)
-latest_trend <- tail(trend_A$median, 1)
-latest_trend_ci <- c(tail(trend_A$lower, 1), tail(trend_A$upper, 1))
+# Convert the model's demeaned trend back to raw % so it's on the same
+# scale as headline CPI YoY (the dashboard overlay).
+offset <- demean_offset(infl_demeaned, weights)
+trend_raw <- trend_B
+trend_raw$median <- trend_raw$median + offset
+trend_raw$lower  <- trend_raw$lower  + offset
+trend_raw$upper  <- trend_raw$upper  + offset
+
+latest_quarter <- max(stan_data$dates)
+latest_trend   <- tail(trend_raw$median, 1)
+latest_trend_ci <- c(tail(trend_raw$lower, 1), tail(trend_raw$upper, 1))
+latest_cs      <- tail(common_share_B$median, 1)
+latest_cs_ci   <- c(tail(common_share_B$lower, 1),
+                    tail(common_share_B$upper, 1))
 ```
 
-::: {.callout-note}
-**Headline.** Trend inflation in `r format(latest_month, "%B %Y")` is
-**`r sprintf("%.2f%%", latest_trend)`** (68% CI
-`r sprintf("[%.2f, %.2f]", latest_trend_ci[1], latest_trend_ci[2])`) on the
-demeaned, annualised scale used by this model. Values are differences from
-each group's 2000–2019 mean inflation rate — add back the long-run mean to
-read as headline % per year. The headline uses Variant A (AR(1) common
-factor), which PSIS-LOO prefers over the Stock-Watson random-walk Variant B
-on this sample — see the variant-comparison section below.
+::: {.callout-note appearance="minimal" icon="false"}
+### Multivariate Core Trend &nbsp;·&nbsp; `r format(latest_quarter, "%B %Y")`
+
+**`r sprintf("%.2f%%", latest_trend)`** per year &nbsp;·&nbsp;
+68% credible interval `r sprintf("%.2f–%.2f%%", latest_trend_ci[1], latest_trend_ci[2])`
+
+A model-based measure of underlying Australian CPI inflation: the
+broad-based, persistent component of the rate of price change, stripped
+of transitory shocks and sector-specific noise. Re-estimated each
+quarter from 33 seasonally-adjusted ABS CPI sub-group series.
 :::
 
 ## Trend inflation
 
-The headline output of the model — the AR(1)-common variant (Variant A),
-preferred by LOO. Trend in Variant A is the weighted sum of sector-specific
-trends $\sum_i w_i s_{i,t}$; the common factor is treated as a transitory
-cycle. The band is a 68% posterior credible interval; the line is the
-posterior median.
+The model's estimate of underlying inflation — median + 68% posterior
+credible band — plotted alongside headline CPI inflation (year-on-year)
+for context.
 
 ```{r trend-headline}
 plot_trend_band(
-  trend_A,
-  title = NULL,
-  subtitle = sprintf("Variant A (AR(1) common factor) · latest month: %s",
-                     format(latest_month, "%B %Y")),
-  caption = "Source: ABS CPI 6401.0 (Table 2 monthly from Apr-2024, Table 18 quarterly). Annualised, demeaned vs 2000-2019 sectoral means."
+  trend_raw,
+  title    = NULL,
+  subtitle = sprintf("Annualised, %% per year. Latest: %s",
+                     format(latest_quarter, "%B %Y")),
+  caption  = "Source: ABS CPI 6401.0; author's calculations.",
+  ylab     = "Percent",
+  overlays = list(
+    "Headline CPI (YoY)"     = dplyr::rename(headline_yoy,     value = "yoy"),
+    "Trimmed mean CPI (YoY)" = dplyr::rename(trimmed_mean_yoy, value = "yoy")
+  ),
+  since    = latest_quarter %m-% years(9)
+)
+```
+
+## Group contributions to trend inflation
+
+The 33 sub-group trend contributions $w_i \cdot s_{i,t}$ aggregated back
+to the 11 standard ABS CPI groups. The bar chart ranks each group's
+contribution to the most recent quarter; the small-multiples panel
+below traces every group's contribution across the full sample.
+
+```{r contribs-data}
+parent_contribs <- aggregate_contribs_by_parent(
+  sector_contribs_B,
+  parent_map   = abs_subgroup_parent(),
+  parent_order = abs_cpi_groups()
+)
+```
+
+```{r contribs-bar, fig.height=3.5}
+plot_contribs_bar(
+  parent_contribs, at_date = latest_quarter,
+  subtitle = format(latest_quarter, "%B %Y"),
+  caption  = "Source: ABS CPI 6401.0 Table 18; author's calculations."
+)
+```
+
+```{r contribs-facet, fig.height=7}
+plot_sector_contribs(
+  parent_contribs,
+  subtitle = sprintf("%s to %s",
+                     format(min(parent_contribs$date), "%b %Y"),
+                     format(latest_quarter, "%b %Y")),
+  caption  = "Source: ABS CPI 6401.0 Table 18; author's calculations."
+)
+```
+
+```{r revisions-section}
+#| results: asis
+#| fig-height: 3.5
+prior_fit_path  <- file.path(PROJECT_ROOT, "outputs/draws/fit_B_prior.rds")
+prior_data_path <- file.path(PROJECT_ROOT, "outputs/draws/stan_data_prior.rds")
+has_prior <- file.exists(prior_fit_path) && file.exists(prior_data_path)
+
+if (has_prior) {
+  fit_B_prior_raw  <- readRDS(prior_fit_path)
+  stan_data_prior  <- readRDS(prior_data_path)
+  fit_B_prior_wrap <- mct_gibbs_fit(fit_B_prior_raw, stan_data_prior)
+
+  cat("## Revisions vs prior vintage\n\n",
+      "How does this quarter's trend estimate compare to the previous run ",
+      "at the same dates? Solid line = current vintage (with band); ",
+      "dashed line = prior.\n\n", sep = "")
+  rev <- posterior_revisions(fit_B_wrap, fit_B_prior_wrap,
+                             stan_data$dates, stan_data_prior$dates)
+  print(plot_revisions(rev,
+                       subtitle = "Solid: current; dashed: prior vintage"))
+
+  cat("\n\n### Which sub-groups drove the latest revision?\n\n",
+      "Bars to the right of zero are sub-groups whose contribution to the ",
+      "headline grew between vintages (pushing trend up); bars to the left ",
+      "pulled trend down.\n\n", sep = "")
+  decomp <- decompose_revisions(
+    fit_B_wrap, fit_B_prior_wrap,
+    stan_data$dates, stan_data_prior$dates,
+    weights = weights$weight,
+    groups  = stan_data$groups
+  )
+  print(plot_revision_attribution(decomp, at_date = latest_quarter,
+                                  subtitle = format(latest_quarter, "%B %Y")))
+}
+```
+
+## Sector decomposition: common vs sector-specific
+
+The trend is the weighted aggregate $\tau_t = \sum_i w_i \big( \lambda_i
+c_t + s_{i,t} \big)$. Splitting that into a **common** part (broad-based
+drift from the common trend, $\lambda_i c_t$, multiplied by each
+sub-group's weight) and a **sector-specific** part (each sub-group's own
+random-walk drift $s_{i,t}$), then aggregating to three macro buckets
+(Goods / Services ex. housing / Housing). Bands above zero pushed trend
+up; below zero pulled it down.
+
+```{r decomposition, fig.height=5}
+decomp <- decompose_trend_by_bucket(
+  fit_B_wrap, weights = weights$weight,
+  dates = stan_data$dates, sub_groups = stan_data$groups,
+  bucket_map = abs_subgroup_to_macrobucket()
+)
+plot_sector_decomposition(
+  decomp = decomp,
+  trend  = trend_B,
+  subtitle = sprintf("%s to %s",
+                     format(latest_quarter %m-% years(9), "%b %Y"),
+                     format(latest_quarter, "%b %Y")),
+  caption  = "Source: ABS CPI 6401.0; author's calculations.",
+  since    = latest_quarter %m-% years(9)
 )
 ```
 
 ## How much of the move is *common*?
 
-The share of weighted-aggregate inflation variance attributable to the common
-factor (vs sector-specific idiosyncrasies). A reading above 50% means the
-month's inflation move is broad-based; below 50% means it is sector-driven.
-See the caveat in the methodology section about Variant A's common-share
-metric — the apples-to-apples Stock-Watson reading is Variant B's, plotted
-in the variant comparison below.
+The share of weighted-aggregate inflation variance attributable to the
+common trend (vs sub-group-specific idiosyncrasies). For AU sub-group
+inflation this is currently `r sprintf("%.0f%%", 100 * latest_cs)`
+(68% CI `r sprintf("[%.0f%%, %.0f%%]", 100 * latest_cs_ci[1], 100 * latest_cs_ci[2])`)
+— most inflation moves are broad-based across sub-groups, not driven by
+any single category. The y-axis is zoomed to the posterior range so
+period-to-period changes are visible; the absolute level has been high
+(>80%) for the entire sample.
 
 ```{r common-share}
 plot_common_share(
-  common_share_A,
-  subtitle = "Variant A — median + 68% credible band"
+  common_share_B,
+  subtitle = "Median + 68% credible band",
+  caption  = "Source: ABS CPI 6401.0 Table 18; author's calculations."
 )
-```
-
-## Sector contributions to trend inflation (last 24 months)
-
-Each band is sector $i$'s contribution $w_i \cdot s_{i,t}$ to the headline
-trend. Stacking sums to (approximately) the headline trend median.
-
-```{r sector-contribs, fig.height=5}
-plot_sector_contribs(
-  sector_contribs_A,
-  since = latest_month %m-% months(23),
-  subtitle = sprintf("Variant A · %s to %s",
-                     format(latest_month %m-% months(23), "%b %Y"),
-                     format(latest_month, "%b %Y"))
-)
-```
-
-## Revisions vs prior vintage
-
-How does this month's trend estimate compare to the previous monthly run at
-the same dates? Solid line = current vintage (with band); dashed line =
-prior.
-
-```{r revisions}
-#| fig-height: 3.5
-prior_fit_path <- "../outputs/draws/fit_A_prior.rds"
-prior_data_path <- "../outputs/draws/stan_data_prior.rds"
-
-if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
-  fit_A_prior <- readRDS(prior_fit_path)
-  stan_data_prior <- readRDS(prior_data_path)
-  rev <- posterior_revisions(fit_A, fit_A_prior,
-                              stan_data$dates, stan_data_prior$dates)
-  plot_revisions(rev,
-                 subtitle = "Solid: current; dashed: prior month vintage")
-} else {
-  cat("_No prior vintage saved at `outputs/draws/fit_A_prior.rds`. The revisions panel becomes active after the next monthly run — see the README for the rotation step._")
-}
-```
-
-### Which sectors drove the latest revision?
-
-If a prior vintage is available, the bar chart below decomposes the change in
-median trend at the most recent date into per-sector contributions. Bars to
-the right of zero are sectors whose contribution to the headline grew between
-vintages (pushing trend up); bars to the left pulled trend down. This is the
-MCMC-native analogue of the NY Fed MCT's Kalman-update attribution.
-
-```{r revision-attribution}
-#| fig-height: 3.5
-if (file.exists(prior_fit_path) && file.exists(prior_data_path)) {
-  decomp <- decompose_revisions(
-    fit_A, fit_A_prior,
-    stan_data$dates, stan_data_prior$dates,
-    weights = weights$weight,
-    groups  = stan_data$groups
-  )
-  plot_revision_attribution(decomp, at_date = latest_month,
-                            subtitle = format(latest_month, "%B %Y"))
-} else {
-  cat("_Attribution panel becomes active after the next monthly run._")
-}
-```
-
-## Variant comparison
-
-Three specifications of the common factor are estimated. **Variant A** treats
-the common factor as a stationary AR(1) cycle (its trend is the weighted
-sum of sector-specific drifts). **Variant B** treats it as a random walk —
-the canonical Stock-Watson common trend. **Variant C** combines both —
-a random-walk common trend AND an i.i.d. common cycle, each with its own
-stochastic volatility — nesting A and B as restrictions. On this sample
-LOO prefers A by a wide margin over C, indicating Australian sectoral
-co-movement is overwhelmingly transitory rather than trend-driven.
-
-```{r variant-trend-compare}
-compare_trend_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
-```
-
-```{r variant-cs-compare}
-compare_common_share_plot(fit_A, fit_B, fit_C, dates = stan_data$dates)
-```
-
-`r variant_comparison$text`
-
-```{r loo-table}
-#| echo: false
-loo_df <- as.data.frame(variant_comparison$loo_compare)
-loo_df$model <- rownames(loo_df)
-loo_df <- loo_df[, c("model", "elpd_diff", "se_diff", "elpd_loo", "se_elpd_loo",
-                     "p_loo", "se_p_loo")]
-knitr::kable(loo_df, digits = 1, row.names = FALSE,
-             caption = "LOO comparison (elpd, with standard errors).")
 ```
 
 ## Methodology
 
-Let $\pi_{i,t}$ be the annualised, demeaned period-on-period inflation of CPI
-group $i \in \{1,\dots,11\}$ in month $t$ on a latent monthly clock. The
-measurement equation is
+Let $\pi_{i,t}$ be the annualised, demeaned quarter-on-quarter inflation of
+ABS CPI sub-group $i \in \{1,\dots,33\}$ in quarter $t$. The measurement
+equation is
 
 $$
-\pi_{i,t} = \lambda_{i,t}\, c_t + s_{i,t}
-            + \exp(h^\varepsilon_{i,t}/2)\,\varepsilon_{i,t}.
+\pi_{i,t} = \lambda_i\, c_t + s_{i,t}
+            + \exp(h^\varepsilon_{i,t}/2)\,
+              s_{i,t}^{\text{out}}\,
+              \big(u_{i,t} + \theta_i u_{i,t-1}\big),
 $$
 
-A **monthly** observation at $t$ (April 2024 onward) equals $\pi_{i,t}$
-directly. A **quarterly** observation placed at the last month of the
-quarter equals the simple average of the three latent monthly inflations:
+where $\lambda_i$ is a sub-group-specific loading on the common trend
+($\lambda_{\text{Rents}} = 1$ pins identification), $u_{i,t}
+\sim \mathcal{N}(0,1)$, and $\theta_i$ is a sub-group-specific MA(1)
+coefficient that lets a shock to sector $i$ bleed out into the next
+quarter. $s_{i,t}^{\text{out}}$ is a per-observation scale-mixture
+indicator: most periods take $s = 1$ (normal observation) but a Bernoulli
+gate $\Pr(s = 1) = p_i$ allows the model to flag anomalous-volatility
+quarters and discount their influence on the trend. State equations are
+random walks with stochastic volatility:
 
 $$
-y^Q_{i,t} = \tfrac{1}{3}\big(\pi_{i,t-2} + \pi_{i,t-1} + \pi_{i,t}\big),
+c_t = c_{t-1} + \exp(h^c_t/2)\,\eta^c_t, \qquad
+s_{i,t} = s_{i,t-1} + \exp(h^s_{i,t}/2)\,\eta^s_{i,t}.
 $$
 
-with measurement-noise variance averaged accordingly.
+Log-volatilities $h^c_t$, $h^s_{i,t}$, $h^\varepsilon_{i,t}$ are themselves
+random walks. Trend is the weighted aggregate
+$\tau_t = \sum_i w_i\big(\lambda_i c_t + s_{i,t}\big)$ with weights from
+the ABS 2025 Weighting Pattern (sub-group level, sums to 1).
 
-The states evolve as
-
-$$
-\begin{aligned}
-\lambda_{i,t} &= \lambda_{i,t-1} + \sigma_\lambda\, \eta^\lambda_{i,t}, \\
-s_{i,t} &= s_{i,t-1} + \exp(h^s_{i,t}/2)\, \eta^s_{i,t}, \\
-h^c_t &= h^c_{t-1} + \sigma_{h_c}\, \eta^{h_c}_t,
-\end{aligned}
-$$
-
-with $h^s_{i,t}, h^\varepsilon_{i,t}$ analogous. The reference loading
-$\lambda_{\text{Housing},t} = 1$ for all $t$ identifies the common factor's
-sign and scale.
-
-**Variant A** (AR(1) common):
-$c_t = \rho\, c_{t-1} + \exp(h^c_t/2)\,\varepsilon^c_t$, $|\rho| < 1$;
-trend is $\tau_t = \sum_i w_i s_{i,t}$.
-
-**Variant B** (RW common trend):
-$c_t = c_{t-1} + \exp(h^c_t/2)\,\eta^c_t$;
-trend is $\tau_t = (\sum_i w_i \lambda_{i,t})\, c_t + \sum_i w_i s_{i,t}$.
-
-**Variant C** (combined trend + cycle):
-$\tau^c_t = \tau^c_{t-1} + \exp(h^c_t/2)\,\eta^{c}_t$ (random-walk common
-trend) and $c_t = \exp(h^{ec}_t/2)\,\varepsilon^c_t$ (i.i.d. common cycle),
-with sector-specific loadings $\lambda^\tau_i$ on the trend and
-$\lambda^\varepsilon_i$ on the cycle (both time-invariant; Housing pinned
-at 1 for identification). The measurement equation becomes $\pi_{i,t} =
-\lambda^\tau_i \tau^c_t + \lambda^\varepsilon_i c_t + s_{i,t} +
-\exp(h^\varepsilon_{i,t}/2)\,\varepsilon_{i,t}$; trend is $\tau_t =
-\sum_i w_i (\lambda^\tau_i \tau^c_t + s_{i,t})$. Variant C nests A
-($\tau^c = 0$) and B ($c = 0$) as restrictions.
-
-Estimated in Stan via `cmdstanr` with all random walks parameterised
-non-centrally. Weights $w_i$ are the 2025 ABS Weighting Pattern, fixed
-across the sample. A and B use 4 chains × 1500 warmup + 1500 sampling
-iterations; C uses 6 chains × 1500 + 1500 because its two-common-factor
-structure is at the edge of HMC mixing reliability on this sample size.
-
-### Caveats
-
-- `common_share` in Variants A and C compares common-INNOVATION variance
-  to sector-TREND innovation variance — an awkward apples-to-oranges
-  metric forced into them for cross-variant comparability. The canonical
-  Stock-Watson interpretation only applies to Variant B. (For C it
-  measures the contribution of the *common-trend* component $\tau^c$ only;
-  the common cycle $c$ does not enter the variance ratio.)
-- The model uses fixed expenditure weights from the latest vintage. Real
-  weight shifts (e.g., the 2017 reweighting moving methodology to annual
-  HFCE-based updates) are not reflected.
-- PSIS-LOO Pareto-k diagnostics for state-space models often flag many high
-  values; treat the LOO ranking as indicative.
+Estimated by Gibbs sampling on the inflation-targeting-era sample
+(`r format(min(stan_data$dates), "%Y-Q%q")` to
+`r format(max(stan_data$dates), "%Y-Q%q")`, T=`r stan_data$T` quarters,
+N=33 sub-groups).
 
 ---
 
 ::: {style="color:#666; font-size:0.85rem;"}
-Built with Stan, cmdstanr, targets, and Quarto. Source:
-[github.com/...] · Methodology and code in the project's `CLAUDE.md` brief.
+Built with R, targets and Quarto. Re-runs automatically each quarter on
+the publication day of the ABS CPI release.
 :::
